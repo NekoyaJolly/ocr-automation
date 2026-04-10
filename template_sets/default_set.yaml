@@ -1,0 +1,15 @@
+name: "納品書処理セット"
+description: "1 枚の納品書から請求書 xlsx + 領収書 txt を同時生成"
+
+entries:
+  - template_name: "default_invoice"
+    enabled: true
+    output_subfolder: "invoices"
+    auto_print: false
+    printer_name: null
+
+  - template_name: "default_receipt"
+    enabled: true
+    output_subfolder: "receipts"
+    auto_print: false
+    printer_name: null

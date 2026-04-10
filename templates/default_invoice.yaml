@@ -1,0 +1,65 @@
+name: "請求書フォーマットA"
+description: "手書き納品書から請求書 xlsx を生成"
+output_format: "xlsx"
+output_filename_pattern: "invoice_{invoice_no}_{issue_date}.xlsx"
+base_template_file: null
+
+extraction_prompt: |
+  この納品書画像から以下の項目を抽出してください。
+  - 請求書番号 (英数字)
+  - 発行日 (YYYY-MM-DD 形式)
+  - 宛名 (会社名)
+  - 明細 (品名・数量・単価・金額の配列)
+  - 合計金額 (数値、円)
+
+  手書き文字を読み取れない場合は null を返してください。
+  推測や創作は絶対にしないでください。
+
+response_schema:
+  type: object
+  required: [invoice_no, issue_date, customer_name, items, total_amount]
+  properties:
+    invoice_no:
+      type: string
+      nullable: true
+    issue_date:
+      type: string
+      nullable: true
+    customer_name:
+      type: string
+      nullable: true
+    items:
+      type: array
+      items:
+        type: object
+        properties:
+          name:
+            type: string
+            nullable: true
+          quantity:
+            type: number
+            nullable: true
+          unit_price:
+            type: number
+            nullable: true
+          amount:
+            type: number
+            nullable: true
+    total_amount:
+      type: number
+      nullable: true
+
+field_placements:
+  - source_key: "invoice_no"
+    target: "B2"
+  - source_key: "issue_date"
+    target: "B3"
+    format_string: "YYYY/MM/DD"
+  - source_key: "customer_name"
+    target: "B4"
+  - source_key: "items"
+    target: "A10"
+    expand: "rows"
+  - source_key: "total_amount"
+    target: "D25"
+    format_string: "¥#,##0"
