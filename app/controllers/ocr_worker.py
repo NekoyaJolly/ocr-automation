@@ -1,16 +1,21 @@
 """OCRWorker — QThread でバックグラウンド OCR 処理を行うワーカー。"""
 
+from __future__ import annotations
+
 import queue
 import time
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtCore import QThread, Signal
 
 from app.core.ocr_engine import OCREngine
+from app.core.review_rules import assess_review
 from app.core.template import TemplateEngine, format_available_keys_hint
 from app.exceptions import LicenseError, TemplateConfigError
 from app.infrastructure.logger import get_logger
-from app.models.job_model import Job, JobStatus
+from app.models.job_model import Job, JobStatus, ReviewStatus
 from app.models.settings_model import RetrySettings
 from app.models.template_model import (
     Template,
@@ -39,14 +44,14 @@ class OCRWorker(QThread):
 
     def __init__(
         self,
-        job_queue: "queue.Queue[Job]",
+        job_queue: queue.Queue[Job],
         ocr_engine: OCREngine,
         template_engine: TemplateEngine,
         templates: dict[str, Template],
         template_sets: dict[str, TemplateSet],
         retry_settings: RetrySettings,
-        license_key_getter: "callable",
-        output_root: "str | None" = None,
+        license_key_getter: callable,
+        output_root: str | None = None,
     ) -> None:
         super().__init__()
         self._queue = job_queue
@@ -108,6 +113,8 @@ class OCRWorker(QThread):
         )
 
         results: list[TemplateApplicationResult] = []
+        successful: list[tuple[TemplateSetEntry, Template, dict[str, Any]]] = []
+
         for entry in template_set.entries:
             if not entry.enabled:
                 continue
@@ -126,49 +133,122 @@ class OCRWorker(QThread):
                 )
                 continue
 
-            result = self._apply_with_retry(
+            mapped, err_result = self._extract_mapped_with_retry(
                 entry=entry,
                 template=template,
                 image_path=job.source_file,
-                output_root=output_root,
                 license_key=license_key,
             )
-            results.append(result)
-            status_str = "成功" if result.status == "success" else "失敗"
-            self.log_message.emit(f"  {template.name}: {status_str}")
+            if err_result is not None:
+                results.append(err_result)
+                continue
+
+            successful.append((entry, template, mapped))
+            results.append(
+                TemplateApplicationResult(
+                    template_name=entry.template_name,
+                    status="success",
+                    output_file=None,
+                )
+            )
+            status_str = "成功"
+            self.log_message.emit(f"  {template.name}: OCR/整形 {status_str}")
 
         job.template_results = results
         successes = sum(1 for r in results if r.status == "success")
         failures = sum(1 for r in results if r.status == "failed")
-
-        if failures == 0:
-            job.status = JobStatus.COMPLETED
-        elif successes > 0:
-            job.status = JobStatus.PARTIAL_SUCCESS
-        else:
-            job.status = JobStatus.FAILED
-
-        from datetime import datetime
 
         job.completed_at = datetime.now()
         self.log_message.emit(
             f"処理完了: {job.source_file.name} — 成功={successes}, 失敗={failures}"
         )
 
+        if failures > 0 and successes == 0:
+            job.status = JobStatus.FAILED
+            self.job_failed.emit(job)
+            return
+
+        if failures > 0:
+            job.status = JobStatus.PARTIAL_SUCCESS
+            self.job_failed.emit(job)
+            return
+
+        all_reasons: list[str] = []
+        raw_by_template: dict[str, Any] = {}
+        norm_by_template: dict[str, Any] = {}
+        needs_review = False
+
+        for entry, template, mapped in successful:
+            raw_inner = mapped.get("__raw__", {})
+            raw_dict = raw_inner if isinstance(raw_inner, dict) else {}
+            assessment = assess_review(raw_dict, template, template_label=template.name)
+            raw_by_template[entry.template_name] = raw_dict
+            norm_by_template[entry.template_name] = mapped
+            if assessment.needs_human_review:
+                needs_review = True
+                all_reasons.extend(assessment.reasons)
+
+        if needs_review:
+            job.review_required = True
+            job.review_status = ReviewStatus.PENDING
+            job.review_reasons = all_reasons
+            job.raw_ocr_result = raw_by_template
+            job.normalized_result = norm_by_template
+            job.user_corrected_result = {}
+            job.status = JobStatus.COMPLETED
+            self.job_completed.emit(job)
+            return
+
+        final_results: list[TemplateApplicationResult] = []
+        for entry, template, mapped in successful:
+            try:
+                out_path = self._template_engine.export_mapped_entry(
+                    mapped=mapped,
+                    template=template,
+                    entry=entry,
+                    output_root=output_root,
+                )
+                final_results.append(
+                    TemplateApplicationResult(
+                        template_name=entry.template_name,
+                        status="success",
+                        output_file=out_path,
+                    )
+                )
+                self.log_message.emit(f"  {template.name}: 出力成功")
+            except Exception as e:
+                logger.exception("出力失敗: %s", template.name)
+                final_results.append(
+                    TemplateApplicationResult(
+                        template_name=entry.template_name,
+                        status="failed",
+                        error_message=str(e),
+                    )
+                )
+
+        job.template_results = final_results
+        successes_out = sum(1 for r in final_results if r.status == "success")
+        failures_out = sum(1 for r in final_results if r.status == "failed")
+        if failures_out == 0:
+            job.status = JobStatus.COMPLETED
+        elif successes_out > 0:
+            job.status = JobStatus.PARTIAL_SUCCESS
+        else:
+            job.status = JobStatus.FAILED
+
         if job.status == JobStatus.FAILED:
             self.job_failed.emit(job)
         else:
             self.job_completed.emit(job)
 
-    def _apply_with_retry(
+    def _extract_mapped_with_retry(
         self,
         entry: TemplateSetEntry,
         template: Template,
         image_path: Path,
-        output_root: Path,
         license_key: str,
-    ) -> TemplateApplicationResult:
-        """リトライ付きでテンプレートを適用する。"""
+    ) -> tuple[dict[str, Any] | None, TemplateApplicationResult | None]:
+        """OCR + フィールド整形まで行い、失敗時は TemplateApplicationResult を返す。"""
 
         import httpx
 
@@ -178,22 +258,17 @@ class OCRWorker(QThread):
 
         for attempt in range(max_retries + 1):
             try:
-                result = self._template_engine._apply_single_entry(
-                    ocr_engine=self._ocr_engine,
-                    image_path=image_path,
-                    entry=entry,
-                    template=template,
-                    output_root=output_root,
-                    license_key=license_key,
+                mapped = self._template_engine.apply_single(
+                    self._ocr_engine,
+                    image_path,
+                    template,
+                    license_key,
                 )
-                if result.status == "success":
-                    result.retry_count = attempt
-                    return result
-                last_error = Exception(result.error_message)
+                return mapped, None
             except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError) as e:
                 last_error = e
             except (LicenseError, TemplateConfigError) as e:
-                return TemplateApplicationResult(
+                return None, TemplateApplicationResult(
                     template_name=entry.template_name,
                     status="failed",
                     error_message=str(e),
@@ -209,7 +284,7 @@ class OCRWorker(QThread):
                 time.sleep(backoff)
                 backoff *= self._retry.backoff_multiplier
 
-        return TemplateApplicationResult(
+        return None, TemplateApplicationResult(
             template_name=entry.template_name,
             status="failed",
             error_message=str(last_error) if last_error else "不明なエラー",

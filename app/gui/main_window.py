@@ -23,6 +23,9 @@ from app.gui.folder_settings import FolderSettingsWidget
 from app.gui.license_settings import LicenseSettingsWidget
 from app.gui.log_viewer import LogViewer
 from app.gui.printer_settings import PrinterSettingsWidget
+from app.gui.qt_log_handler import attach_controller_logs_to_viewer
+from app.gui.review_editor import ReviewEditorDialog
+from app.gui.review_queue import ReviewQueueWidget
 from app.gui.template_editor import TemplateEditorWidget
 from app.gui.template_set_editor import TemplateSetEditorWidget
 from app.infrastructure.http_client import HttpClient
@@ -89,7 +92,17 @@ class MainWindow(QMainWindow):
         self._tabs = QTabWidget()
 
         self._log_viewer = LogViewer()
+        self._controller_log_emitter = attach_controller_logs_to_viewer(
+            self,
+            self._log_viewer,
+        )
         self._tabs.addTab(self._log_viewer, "ログ")
+
+        self._review_queue = ReviewQueueWidget(self._controller)
+        self._tabs.insertTab(1, self._review_queue, "レビュー (0)")
+        self._review_queue.open_review_requested.connect(self._open_review_editor)
+        self._controller.review_queue_count_changed.connect(self._update_review_tab_title)
+        self._update_review_tab_title(self._controller.pending_review_count)
 
         self._folder_settings = FolderSettingsWidget()
         self._tabs.addTab(self._folder_settings, "フォルダ設定")
@@ -178,6 +191,21 @@ class MainWindow(QMainWindow):
         settings.folders = self._folder_settings.get_settings()
         self._controller.save_settings()
         self._log_viewer.append_log("設定を保存しました")
+
+    @Slot(int)
+    def _update_review_tab_title(self, count: int) -> None:
+        idx = self._tabs.indexOf(self._review_queue)
+        if idx >= 0:
+            self._tabs.setTabText(idx, f"レビュー ({count})")
+
+    @Slot(str)
+    def _open_review_editor(self, job_id: str) -> None:
+        try:
+            dlg = ReviewEditorDialog(self._controller, job_id, self)
+            dlg.finished.connect(self._review_queue.refresh)
+            dlg.show()
+        except ValueError as e:
+            QMessageBox.warning(self, "レビュー", str(e))
 
     @Slot(object)
     def _on_job_done(self, job: object) -> None:

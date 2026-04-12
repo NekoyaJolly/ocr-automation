@@ -161,14 +161,12 @@ class TemplateEngine:
         try:
             extracted = self.apply_single(ocr_engine, image_path, template, license_key)
 
-            output_dir = output_root / entry.output_subfolder
-            output_dir.mkdir(parents=True, exist_ok=True)
-
-            filename = self._format_filename(template.output_filename_pattern, extracted)
-            output_path = output_dir / filename
-
-            exporter = ExporterFactory.create(template.output_format)
-            exporter.export(data=extracted, template=template, output_path=output_path)
+            output_path = self.export_mapped_entry(
+                mapped=extracted,
+                template=template,
+                entry=entry,
+                output_root=output_root,
+            )
 
             logger.info("テンプレート適用成功: %s (%s) → %s", entry_key, template.name, output_path)
             return TemplateApplicationResult(
@@ -183,6 +181,22 @@ class TemplateEngine:
                 status="failed",
                 error_message=str(e),
             )
+
+    def export_mapped_entry(
+        self,
+        mapped: dict[str, Any],
+        template: Template,
+        entry: TemplateSetEntry,
+        output_root: Path,
+    ) -> Path:
+        """整形済みデータをテンプレート定義に従いファイルへ書き出す。"""
+        output_dir = output_root / entry.output_subfolder
+        output_dir.mkdir(parents=True, exist_ok=True)
+        filename = self._format_filename(template.output_filename_pattern, mapped)
+        output_path = output_dir / filename
+        exporter = ExporterFactory.create(template.output_format)
+        exporter.export(data=mapped, template=template, output_path=output_path)
+        return output_path
 
     def apply_single(
         self,

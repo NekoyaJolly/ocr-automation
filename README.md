@@ -22,6 +22,10 @@ uv run ruff check app/
 uv run ruff format app/
 ```
 
+## データの保存場所
+
+アプリは設定・ログなどを OS のアプリデータ配下（Windows では `%APPDATA%\OCRAutomation\`）に保存します。承認・却下したレビューは `review_history\YYYY-MM\<job_id>.json` に履歴として残ります。履歴は自動削除されないため、ディスクを空けたい場合は **必要に応じて `review_history` フォルダごと手動で削除** して構いません。
+
 ## 技術スタック
 
 - **言語**: Python 3.12

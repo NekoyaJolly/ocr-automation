@@ -49,3 +49,20 @@ def get_user_template_sets_dir() -> Path:
     sets_dir = get_app_data_dir() / "template_sets"
     sets_dir.mkdir(parents=True, exist_ok=True)
     return sets_dir
+
+
+def get_review_jobs_dir() -> Path:
+    """レビュー待ちジョブ JSON の保存先を返す。"""
+    review_dir = get_app_data_dir() / "review_jobs"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    return review_dir
+
+
+def get_review_history_dir() -> Path:
+    """承認・却下レビュー履歴 JSON のルートディレクトリを返す。
+
+    実データは YYYY-MM サブフォルダ配下に配置する。
+    """
+    hist_dir = get_app_data_dir() / "review_history"
+    hist_dir.mkdir(parents=True, exist_ok=True)
+    return hist_dir
