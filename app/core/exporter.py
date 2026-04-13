@@ -1,6 +1,9 @@
 """出力フォーマット — 抽象 Exporter + 各フォーマット実装。"""
 
+import json
 from abc import ABC, abstractmethod
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -9,6 +12,38 @@ from app.infrastructure.logger import get_logger
 from app.models.template_model import Template
 
 logger = get_logger(__name__)
+
+# Windows のメモ帳・Excel で UTF-8 を誤検出しないよう TXT は BOM 付きで書き出す。
+TXT_ENCODING = "utf-8-sig"
+
+# 空ブックへ直接書き込む xlsx で日本語表示を安定させる。ベーステンプレ読込時は既存スタイルを尊重。
+_JP_CELL_FONT: Any = None
+
+
+def _jp_cell_font() -> Any:
+    global _JP_CELL_FONT
+    if _JP_CELL_FONT is None:
+        from openpyxl.styles import Font
+
+        _JP_CELL_FONT = Font(name="Meiryo", size=11)
+    return _JP_CELL_FONT
+
+
+def _normalize_excel_scalar(value: Any) -> Any:
+    """openpyxl へ渡すスカラーを正規化する。文字列・数値・日付はそのまま保持。"""
+    if value is None:
+        return None
+    if isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, datetime | date):
+        return value
+    if isinstance(value, dict | list):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return str(value)
 
 
 class Exporter(ABC):
@@ -41,7 +76,7 @@ class TxtExporter(Exporter):
                     lines.append(f"  [{i + 1}] {item}")
             else:
                 lines.append(f"{key}: {value}")
-        output_path.write_text("\n".join(lines), encoding="utf-8")
+        output_path.write_text("\n".join(lines), encoding=TXT_ENCODING)
         logger.info("TXT 出力完了: %s", output_path)
 
 
@@ -93,11 +128,9 @@ class XlsxExporter(Exporter):
         base_path = (
             Path(template.base_template_file) if template.base_template_file else None
         )
-        wb = (
-            load_workbook(str(base_path))
-            if base_path and base_path.exists()
-            else Workbook()
-        )
+        from_workbook = bool(base_path and base_path.exists())
+        wb = load_workbook(str(base_path)) if from_workbook else Workbook()
+        apply_jp_font = not from_workbook
 
         ws = wb.active
         if ws is None:
@@ -109,44 +142,77 @@ class XlsxExporter(Exporter):
                 continue
 
             if fp.expand == "rows" and isinstance(value, list):
-                self._expand_rows(ws, fp.target, value)
+                self._expand_rows(ws, fp.target, value, apply_jp_font)
             elif fp.expand == "cols" and isinstance(value, list):
-                self._expand_cols(ws, fp.target, value)
+                self._expand_cols(ws, fp.target, value, apply_jp_font)
             else:
-                ws[fp.target] = value
+                cell = ws[fp.target]
+                cell.value = _normalize_excel_scalar(value)
+                if apply_jp_font:
+                    cell.font = _jp_cell_font()
 
         wb.save(str(output_path))
         logger.info("XLSX 出力完了: %s", output_path)
 
     @staticmethod
-    def _expand_rows(ws: Any, start_cell: str, items: list[Any]) -> None:
+    def _expand_rows(
+        ws: Any, start_cell: str, items: list[Any], apply_jp_font: bool
+    ) -> None:
         """配列を縦方向に展開する。"""
         from openpyxl.utils.cell import column_index_from_string, coordinate_from_string
 
         col_letter, row_num = coordinate_from_string(start_cell)
         col_idx = column_index_from_string(col_letter)
+        font = _jp_cell_font() if apply_jp_font else None
 
         for i, item in enumerate(items):
             if isinstance(item, dict):
                 for j, (_, val) in enumerate(item.items()):
-                    ws.cell(row=row_num + i, column=col_idx + j, value=val)
+                    c = ws.cell(
+                        row=row_num + i,
+                        column=col_idx + j,
+                        value=_normalize_excel_scalar(val),
+                    )
+                    if font is not None:
+                        c.font = font
             else:
-                ws.cell(row=row_num + i, column=col_idx, value=item)
+                c = ws.cell(
+                    row=row_num + i,
+                    column=col_idx,
+                    value=_normalize_excel_scalar(item),
+                )
+                if font is not None:
+                    c.font = font
 
     @staticmethod
-    def _expand_cols(ws: Any, start_cell: str, items: list[Any]) -> None:
+    def _expand_cols(
+        ws: Any, start_cell: str, items: list[Any], apply_jp_font: bool
+    ) -> None:
         """配列を横方向に展開する。"""
         from openpyxl.utils.cell import column_index_from_string, coordinate_from_string
 
         col_letter, row_num = coordinate_from_string(start_cell)
         col_idx = column_index_from_string(col_letter)
+        font = _jp_cell_font() if apply_jp_font else None
 
         for i, item in enumerate(items):
             if isinstance(item, dict):
                 for j, (_, val) in enumerate(item.items()):
-                    ws.cell(row=row_num + j, column=col_idx + i, value=val)
+                    c = ws.cell(
+                        row=row_num + j,
+                        column=col_idx + i,
+                        value=_normalize_excel_scalar(val),
+                    )
+                    if font is not None:
+                        c.font = font
             else:
-                ws.cell(row=row_num, column=col_idx + i, value=item)
+                c = ws.cell(
+                    row=row_num,
+                    column=col_idx + i,
+                    value=_normalize_excel_scalar(item),
+                )
+                if font is not None:
+                    c.font = font
 
 
 class PdfExporter(Exporter):

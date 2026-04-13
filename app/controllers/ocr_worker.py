@@ -202,6 +202,12 @@ class OCRWorker(QThread):
             job.normalized_result = norm_by_template
             job.user_corrected_result = {}
             job.status = JobStatus.COMPLETED
+            self.log_message.emit(
+                "  → レビュー待ち: OCR は成功していますが、ルール上の確認が必要です。"
+            )
+            for r in all_reasons:
+                self.log_message.emit(f"     • {r}")
+                logger.info("レビュー理由: %s", r)
             self.job_completed.emit(job)
             return
 

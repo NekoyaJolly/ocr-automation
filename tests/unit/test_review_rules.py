@@ -1,6 +1,10 @@
 """review_rules の単体テスト。"""
 
-from app.core.review_rules import ReviewTier, assess_review
+from app.core.review_rules import (
+    ReviewTier,
+    assess_review,
+    source_keys_for_review_presence_marker,
+)
 from app.models.ocr_result_model import FieldConfidence
 from app.models.template_model import FieldPlacement, Template
 
@@ -106,6 +110,59 @@ def test_uncertain_triggers_needs_review():
     }
     a = assess_review(data, t, field_confidences=fc)
     assert a.tier == ReviewTier.NEEDS_REVIEW
+
+
+def test_source_keys_for_review_presence_marker_falls_back_to_schema_required():
+    t = _minimal_template(required=["invoice_no"])
+    assert source_keys_for_review_presence_marker(t) == frozenset({"invoice_no"})
+
+
+def test_source_keys_for_review_presence_marker_follows_flags():
+    """UI の * マーク対象が assess の欠落チェックキーと一致する。"""
+    t = Template(
+        name="inv",
+        output_format="txt",
+        output_filename_pattern="x.txt",
+        extraction_prompt="p",
+        response_schema={
+            "type": "object",
+            "required": ["invoice_no", "total_amount"],
+            "properties": {
+                "invoice_no": {"type": "string"},
+                "total_amount": {"type": "number"},
+            },
+        },
+        field_placements=[
+            FieldPlacement(source_key="invoice_no", target="a", required_for_review=False),
+            FieldPlacement(source_key="total_amount", target="b", required_for_review=True),
+        ],
+    )
+    assert source_keys_for_review_presence_marker(t) == frozenset({"total_amount"})
+
+
+def test_when_required_for_review_set_only_those_keys_need_values():
+    """required_for_review 指定時は Schema の required よりフラグ優先 (null 許容)。"""
+    t = Template(
+        name="inv",
+        output_format="txt",
+        output_filename_pattern="x.txt",
+        extraction_prompt="p",
+        response_schema={
+            "type": "object",
+            "required": ["invoice_no", "total_amount"],
+            "properties": {
+                "invoice_no": {"type": "string"},
+                "total_amount": {"type": "number"},
+            },
+        },
+        field_placements=[
+            FieldPlacement(source_key="invoice_no", target="a", required_for_review=False),
+            FieldPlacement(source_key="total_amount", target="b", required_for_review=True),
+        ],
+    )
+    data = {"invoice_no": None, "total_amount": 100}
+    a = assess_review(data, t)
+    assert a.tier == ReviewTier.SAFE
 
 
 def test_required_for_review_empty_needs_review():

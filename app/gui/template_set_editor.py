@@ -1,9 +1,10 @@
 """テンプレートセットエディタ画面。"""
 
+import traceback
 from pathlib import Path
 
 import yaml
-from PySide6.QtCore import Signal, Slot
+from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
@@ -144,7 +145,17 @@ class TemplateSetEditorWidget(QWidget):
             ts = load_template_set(path)
             self._load_to_form(ts)
         except Exception as e:
-            QMessageBox.warning(self, "読み込みエラー", str(e))
+            logger.exception("テンプレートセットの読み込みに失敗しました: %s", path)
+            box = QMessageBox(self)
+            box.setWindowTitle("読み込みエラー")
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setText(str(e))
+            box.setInformativeText(
+                "「詳細を表示」から全文をコピーできます。"
+                " ログタブ・%APPDATA%\\OCRAutomation\\logs\\ にも記録されます。"
+            )
+            box.setDetailedText(traceback.format_exc())
+            box.exec()
 
     def _load_to_form(self, ts: TemplateSet) -> None:
         self._name_edit.setText(ts.name)
@@ -159,13 +170,13 @@ class TemplateSetEditorWidget(QWidget):
         self._entries_table.setItem(row, 0, QTableWidgetItem(entry.template_name))
         enabled_item = QTableWidgetItem()
         enabled_item.setCheckState(
-            2 if entry.enabled else 0  # type: ignore[arg-type]
+            Qt.CheckState.Checked if entry.enabled else Qt.CheckState.Unchecked
         )
         self._entries_table.setItem(row, 1, enabled_item)
         self._entries_table.setItem(row, 2, QTableWidgetItem(entry.output_subfolder))
         print_item = QTableWidgetItem()
         print_item.setCheckState(
-            2 if entry.auto_print else 0  # type: ignore[arg-type]
+            Qt.CheckState.Checked if entry.auto_print else Qt.CheckState.Unchecked
         )
         self._entries_table.setItem(row, 3, print_item)
         self._entries_table.setItem(row, 4, QTableWidgetItem(entry.printer_name or ""))
@@ -197,9 +208,17 @@ class TemplateSetEditorWidget(QWidget):
 
             entries.append(TemplateSetEntry(
                 template_name=tname,
-                enabled=enabled_item.checkState() == 2 if enabled_item else True,  # type: ignore[arg-type]
+                enabled=(
+                    enabled_item.checkState() == Qt.CheckState.Checked
+                    if enabled_item
+                    else True
+                ),
                 output_subfolder=sub_item.text().strip() if sub_item else "",
-                auto_print=print_item.checkState() == 2 if print_item else False,  # type: ignore[arg-type]
+                auto_print=(
+                    print_item.checkState() == Qt.CheckState.Checked
+                    if print_item
+                    else False
+                ),
                 printer_name=printer_item.text().strip() or None if printer_item else None,
             ))
         return entries

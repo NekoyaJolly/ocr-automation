@@ -38,6 +38,32 @@ class ReviewAssessment(BaseModel):
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
+def _required_keys_for_value_presence_check(
+    template: Template,
+    schema: dict[str, Any],
+) -> list[str]:
+    """値の欠落 (必須項目が未取得) を見るキー一覧。
+
+    ``required_for_review`` が 1 つでも True なテンプレートでは、
+    そのキーのみをチェックする (Gemini 用 JSON Schema の required は別目的)。
+    フラグが無い従来テンプレートでは response_schema.required にフォールバックする。
+    """
+    flagged = {fp.source_key for fp in template.field_placements if fp.required_for_review}
+    if flagged:
+        return sorted(flagged)
+    return _parse_json_schema_required(schema)
+
+
+def source_keys_for_review_presence_marker(template: Template) -> frozenset[str]:
+    """レビュー編集 UI の「*」マークを付ける ``source_key`` 集合。
+
+    :func:`assess_review` の「値が空ならレビュー」判定と同じキーを使う。
+    ``required_for_review`` が 1 つでも True ならそのキーのみ、
+    無ければ ``response_schema.required`` にフォールバックする。
+    """
+    return frozenset(_required_keys_for_value_presence_check(template, template.response_schema))
+
+
 def _parse_json_schema_required(schema: dict[str, Any]) -> list[str]:
     if schema.get("type") != "object":
         return []
@@ -149,11 +175,16 @@ def assess_review(
             reasons=[prefix + "OCR結果が空です"],
         )
 
-    required_keys = _parse_json_schema_required(schema)
+    required_keys = _required_keys_for_value_presence_check(template, schema)
     for key in required_keys:
         value = extracted_data.get(key)
         if _is_empty_value(value):
-            reasons.append(prefix + f"必須項目が未取得です: {key}")
+            label = (
+                "レビュー必須項目が空です"
+                if any(fp.required_for_review for fp in template.field_placements)
+                else "必須項目が未取得です"
+            )
+            reasons.append(prefix + f"{label}: {key}")
 
     props = _json_schema_properties(schema)
     for key, prop in props.items():
@@ -193,8 +224,6 @@ def assess_review(
     if not placement_keys:
         placement_keys = list(extracted_data.keys())
 
-    required_review = {fp.source_key for fp in template.field_placements if fp.required_for_review}
-
     for sk in placement_keys:
         fc = fc_map.get(sk)
         if fc is None:
@@ -203,14 +232,6 @@ def assess_review(
             return ReviewAssessment(
                 tier=ReviewTier.NEEDS_REVIEW,
                 reasons=[prefix + f"不確かな読み取り: {sk}"],
-            )
-
-    for sk in required_review:
-        val = extracted_data.get(sk)
-        if _is_empty_value(val):
-            return ReviewAssessment(
-                tier=ReviewTier.NEEDS_REVIEW,
-                reasons=[prefix + f"レビュー必須項目が空です: {sk}"],
             )
 
     all_certain = all(

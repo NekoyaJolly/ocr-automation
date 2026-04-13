@@ -201,7 +201,8 @@ class TestExporters:
         }
         out = tmp_path / "out.txt"
         exporter.export(data, template, out)
-        content = out.read_text(encoding="utf-8")
+        assert out.read_bytes().startswith(b"\xef\xbb\xbf")
+        content = out.read_text(encoding="utf-8-sig")
         assert "INV-001" in content
 
     def test_docx_exporter(self, tmp_path: Path):
@@ -223,6 +224,14 @@ class TestExporters:
         out = tmp_path / "out.xlsx"
         exporter.export(data, template, out)
         assert out.exists()
+        from openpyxl import load_workbook
+
+        wb = load_workbook(out)
+        ws = wb.active
+        assert ws is not None
+        assert ws["B2"].value == "INV-001"
+        assert ws["B4"].value == "テスト"
+        assert ws["D25"].value == 100
 
     def test_exporter_factory(self):
         assert isinstance(ExporterFactory.create("txt"), TxtExporter)

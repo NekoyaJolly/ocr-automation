@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.controllers.app_controller import AppController
+from app.core.review_rules import source_keys_for_review_presence_marker
 from app.core.template import TemplateEngine
 from app.models.template_model import Template
 
@@ -206,13 +207,13 @@ class ReviewEditorDialog(QDialog):
         if not isinstance(raw, dict):
             raw = {}
 
-        required = set()
-        schema = self._template.response_schema
-        if schema.get("type") == "object":
-            req = schema.get("required")
-            if isinstance(req, list):
-                required = {str(x) for x in req}
+        marked_for_review = source_keys_for_review_presence_marker(self._template)
+        display_by_key: dict[str, str] = {}
+        for fp in self._template.field_placements:
+            if fp.display_name and fp.source_key not in display_by_key:
+                display_by_key[fp.source_key] = fp.display_name
 
+        schema = self._template.response_schema
         prop_keys: list[str] = []
         props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
         if isinstance(props, dict):
@@ -228,7 +229,8 @@ class ReviewEditorDialog(QDialog):
 
         for key in ordered_keys:
             val = raw.get(key)
-            label = f"{key} *" if key in required else key
+            base_label = display_by_key.get(key, key)
+            label = f"{base_label} *" if key in marked_for_review else base_label
             if isinstance(val, list | dict):
                 te = QTextEdit()
                 te.setPlainText(json.dumps(val, ensure_ascii=False, indent=2))

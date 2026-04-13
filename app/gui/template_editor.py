@@ -1,6 +1,7 @@
 """テンプレートエディタ画面。"""
 
 import json
+import traceback
 from pathlib import Path
 
 import yaml
@@ -147,7 +148,17 @@ class TemplateEditorWidget(QWidget):
             self._load_to_form(tmpl)
             self._current_template = tmpl
         except Exception as e:
-            QMessageBox.warning(self, "読み込みエラー", str(e))
+            logger.exception("テンプレート YAML の読み込みに失敗しました: %s", path)
+            box = QMessageBox(self)
+            box.setWindowTitle("読み込みエラー")
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setText(str(e))
+            box.setInformativeText(
+                "「詳細を表示」から全文をコピーできます。"
+                " ログファイルにも記録されます。"
+            )
+            box.setDetailedText(traceback.format_exc())
+            box.exec()
 
     def _load_to_form(self, t: Template) -> None:
         self._name_edit.setText(t.name)
