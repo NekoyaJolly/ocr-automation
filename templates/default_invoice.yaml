@@ -4,7 +4,10 @@ output_format: "xlsx"
 output_filename_pattern: "invoice_{invoice_no}_{issue_date}.xlsx"
 base_template_file: null
 
-extraction_prompt: |
+industry_preset: "general"
+industry_context: ""
+
+custom_extraction_instructions: |
   この納品書画像から以下の項目を抽出してください。
   - 請求書番号 (英数字)
   - 発行日 (YYYY-MM-DD 形式)
@@ -12,54 +15,90 @@ extraction_prompt: |
   - 明細 (品名・数量・単価・金額の配列)
   - 合計金額 (数値、円)
 
-  手書き文字を読み取れない場合は null を返してください。
-  推測や創作は絶対にしないでください。
+  手書き文字を読み取れない場合は value を null にしてください。
+  システムプロンプトの推測ルールに従い confidence を付与してください。
+
+# JSON Schema (confidence 付き)。アンカーでフィールド定義を共有。
+_x_str: &wrap_string
+  type: object
+  required: [value, confidence]
+  properties:
+    value:
+      type: string
+      nullable: true
+    confidence:
+      type: string
+      enum: [certain, inferred, uncertain]
+    inference_reason:
+      type: string
+      nullable: true
+
+_x_num: &wrap_number
+  type: object
+  required: [value, confidence]
+  properties:
+    value:
+      type: number
+      nullable: true
+    confidence:
+      type: string
+      enum: [certain, inferred, uncertain]
+    inference_reason:
+      type: string
+      nullable: true
+
+_line_item: &line_item
+  type: object
+  required: [name, quantity, unit_price, amount]
+  properties:
+    name: *wrap_string
+    quantity: *wrap_number
+    unit_price: *wrap_number
+    amount: *wrap_number
 
 response_schema:
   type: object
   required: [invoice_no, issue_date, customer_name, items, total_amount]
   properties:
-    invoice_no:
-      type: string
-      nullable: true
-    issue_date:
-      type: string
-      nullable: true
-    customer_name:
-      type: string
-      nullable: true
+    invoice_no: *wrap_string
+    issue_date: *wrap_string
+    customer_name: *wrap_string
+    total_amount: *wrap_number
     items:
-      type: array
-      items:
-        type: object
-        properties:
-          name:
-            type: string
-            nullable: true
-          quantity:
-            type: number
-            nullable: true
-          unit_price:
-            type: number
-            nullable: true
-          amount:
-            type: number
-            nullable: true
-    total_amount:
-      type: number
-      nullable: true
+      type: object
+      required: [value, confidence]
+      properties:
+        value:
+          type: array
+          items: *line_item
+        confidence:
+          type: string
+          enum: [certain, inferred, uncertain]
+        inference_reason:
+          type: string
+          nullable: true
 
 field_placements:
   - source_key: "invoice_no"
     target: "B2"
+    display_name: "請求書番号"
+    required_for_review: false
   - source_key: "issue_date"
     target: "B3"
+    display_name: "発行日"
     format_string: "YYYY/MM/DD"
+    required_for_review: false
   - source_key: "customer_name"
     target: "B4"
+    display_name: "宛名"
+    required_for_review: false
   - source_key: "items"
     target: "A10"
+    display_name: "明細"
     expand: "rows"
+    required_for_review: false
   - source_key: "total_amount"
     target: "D25"
+    display_name: "合計金額"
     format_string: "¥#,##0"
+    required_for_review: true

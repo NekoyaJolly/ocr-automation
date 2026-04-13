@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from app.infrastructure.logger import get_logger
 from app.models.job_model import Job
+
+logger = get_logger(__name__)
 
 
 class ReviewStore:
@@ -25,7 +28,12 @@ class ReviewStore:
             try:
                 data = json.loads(file_path.read_text(encoding="utf-8"))
                 jobs.append(Job.model_validate(data))
-            except Exception:
+            except Exception as e:
+                logger.warning(
+                    "レビュー待ちジョブ JSON の読み込みをスキップしました: %s — %s",
+                    file_path,
+                    e,
+                )
                 continue
         return jobs
 

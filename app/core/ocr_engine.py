@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
+from app.core.ocr_response_flatten import flatten_gemini_extracted
 from app.exceptions import BackendUnreachableError, OCREngineError
 from app.infrastructure.http_client import HttpClient
 from app.infrastructure.logger import get_logger
@@ -78,9 +79,14 @@ class GeminiBackendEngine(OCREngine):
         except Exception as e:
             raise OCREngineError(f"レスポンスのパースに失敗: {e}") from e
 
+        raw_data = body.get("data", {})
+        if not isinstance(raw_data, dict):
+            raw_data = {}
+        flat, fc = flatten_gemini_extracted(raw_data)
         return OCRResult(
             source_image=image_path,
-            extracted_data=body.get("data", {}),
+            extracted_data=flat,
+            field_confidences=fc,
             raw_response=body,
             processing_time_ms=body.get("processing_time_ms", 0),
         )

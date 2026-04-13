@@ -4,38 +4,69 @@ output_format: "txt"
 output_filename_pattern: "receipt_{invoice_no}_{issue_date}.txt"
 base_template_file: null
 
-extraction_prompt: |
+industry_preset: "general"
+industry_context: ""
+
+custom_extraction_instructions: |
   この納品書画像から以下の項目を抽出してください。
   - 領収書番号 (英数字)
   - 発行日 (YYYY-MM-DD 形式)
   - 宛名 (会社名)
   - 合計金額 (数値、円)
 
-  手書き文字を読み取れない場合は null を返してください。
+  手書き文字を読み取れない場合は value を null にしてください。
+
+_x_str: &wrap_string
+  type: object
+  required: [value, confidence]
+  properties:
+    value:
+      type: string
+      nullable: true
+    confidence:
+      type: string
+      enum: [certain, inferred, uncertain]
+    inference_reason:
+      type: string
+      nullable: true
+
+_x_num: &wrap_number
+  type: object
+  required: [value, confidence]
+  properties:
+    value:
+      type: number
+      nullable: true
+    confidence:
+      type: string
+      enum: [certain, inferred, uncertain]
+    inference_reason:
+      type: string
+      nullable: true
 
 response_schema:
   type: object
   required: [invoice_no, issue_date, customer_name, total_amount]
   properties:
-    invoice_no:
-      type: string
-      nullable: true
-    issue_date:
-      type: string
-      nullable: true
-    customer_name:
-      type: string
-      nullable: true
-    total_amount:
-      type: number
-      nullable: true
+    invoice_no: *wrap_string
+    issue_date: *wrap_string
+    customer_name: *wrap_string
+    total_amount: *wrap_number
 
 field_placements:
   - source_key: "invoice_no"
     target: "receipt_no"
+    display_name: "領収書番号"
+    required_for_review: false
   - source_key: "issue_date"
     target: "date"
+    display_name: "発行日"
+    required_for_review: false
   - source_key: "customer_name"
     target: "customer"
+    display_name: "宛名"
+    required_for_review: false
   - source_key: "total_amount"
     target: "amount"
+    display_name: "合計金額"
+    required_for_review: true

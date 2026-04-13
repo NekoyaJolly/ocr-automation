@@ -1,6 +1,7 @@
 """環境変数・Secret Manager からの設定読み込み。"""
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -13,6 +14,7 @@ class Settings(BaseSettings):
     gemini_api_key_secret_name: str = "gemini-api-key"
     gemini_api_key: str = ""  # ローカル開発用、本番では Secret Manager
     gemini_model: str = "gemini-3.1-pro-preview"
+    gemini_thinking_level: Literal["low", "medium", "high"] = "medium"
     log_level: str = "INFO"
     rate_limit_per_minute: int = 60
     rate_limit_per_second: int = 5

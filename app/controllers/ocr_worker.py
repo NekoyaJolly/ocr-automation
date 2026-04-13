@@ -181,7 +181,13 @@ class OCRWorker(QThread):
         for entry, template, mapped in successful:
             raw_inner = mapped.get("__raw__", {})
             raw_dict = raw_inner if isinstance(raw_inner, dict) else {}
-            assessment = assess_review(raw_dict, template, template_label=template.name)
+            fc_raw = mapped.get("__field_confidences__")
+            assessment = assess_review(
+                raw_dict,
+                template,
+                template_label=template.name,
+                field_confidences=fc_raw if fc_raw else None,
+            )
             raw_by_template[entry.template_name] = raw_dict
             norm_by_template[entry.template_name] = mapped
             if assessment.needs_human_review:

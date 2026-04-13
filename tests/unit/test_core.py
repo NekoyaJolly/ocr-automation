@@ -66,6 +66,7 @@ def _make_template(output_format: str = "txt") -> Template:
             FieldPlacement(source_key="customer_name", target="B4"),
             FieldPlacement(source_key="total_amount", target="D25"),
         ],
+        industry_preset="general",
     )
 
 

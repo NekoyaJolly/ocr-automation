@@ -25,7 +25,11 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     application.state.settings = settings
 
     client = create_gemini_client()
-    application.state.gemini_service = GeminiService(client, settings.gemini_model)
+    application.state.gemini_service = GeminiService(
+        client,
+        settings.gemini_model,
+        thinking_level=settings.gemini_thinking_level,
+    )
 
     yield
 

@@ -33,6 +33,7 @@ from app.infrastructure.review_history_store import ReviewHistoryStore
 from app.infrastructure.review_store import ReviewStore
 from app.infrastructure.settings_store import SettingsStore
 from app.models.job_model import Job, JobStatus, ReviewStatus
+from app.models.ocr_result_model import FieldConfidence
 from app.models.settings_model import AppSettings
 from app.models.template_model import Template, TemplateApplicationResult, TemplateSet
 from app.utils.helpers import generate_job_id
@@ -164,7 +165,19 @@ class AppController(QObject):
             raw = mapped.get("__raw__", {})
             if not isinstance(raw, dict):
                 raw = {}
-            a = assess_review(raw, template, template_label=template.name)
+            mfc = mapped.get("__field_confidences__") or {}
+            fc_parsed: dict[str, FieldConfidence] | None = None
+            if mfc:
+                fc_parsed = {
+                    k: FieldConfidence.model_validate(v) if isinstance(v, dict) else v
+                    for k, v in mfc.items()
+                }
+            a = assess_review(
+                raw,
+                template,
+                template_label=template.name,
+                field_confidences=fc_parsed,
+            )
             if a.tier == ReviewTier.NEEDS_REVIEW:
                 reasons.extend(a.reasons)
         return (len(reasons) == 0, reasons)

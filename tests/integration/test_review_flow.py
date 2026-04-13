@@ -59,14 +59,29 @@ description: ""
 output_format: "txt"
 output_filename_pattern: "out.txt"
 base_template_file: null
-extraction_prompt: "t"
+industry_preset: "general"
+custom_extraction_instructions: "t"
 response_schema:
   type: object
   required: []
   properties:
     note:
-      type: string
-field_placements: []
+      type: object
+      required: [value, confidence]
+      properties:
+        value:
+          type: string
+          nullable: true
+        confidence:
+          type: string
+          enum: [certain, inferred, uncertain]
+        inference_reason:
+          type: string
+          nullable: true
+field_placements:
+  - source_key: "note"
+    target: "x"
+    required_for_review: false
 """
 
 _MINIMAL_SET_YAML = """

@@ -32,12 +32,28 @@ class ExtractResult:
         self.model_used = model_used
 
 
+def _thinking_level_to_enum(level: str) -> types.ThinkingLevel:
+    key = (level or "medium").strip().lower()
+    mapping = {
+        "low": types.ThinkingLevel.LOW,
+        "medium": types.ThinkingLevel.MEDIUM,
+        "high": types.ThinkingLevel.HIGH,
+    }
+    return mapping.get(key, types.ThinkingLevel.MEDIUM)
+
+
 class GeminiService:
     """Gemini に画像を送って構造化抽出を行うサービス。"""
 
-    def __init__(self, client: genai.Client, model_name: str) -> None:
+    def __init__(
+        self,
+        client: genai.Client,
+        model_name: str,
+        thinking_level: str = "medium",
+    ) -> None:
         self._client = client
         self._model = model_name
+        self._thinking_level = thinking_level
 
     async def extract(
         self,
@@ -67,7 +83,9 @@ class GeminiService:
             config = types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=response_schema,
-                thinking_config=types.ThinkingConfig(thinking_level="low"),
+                thinking_config=types.ThinkingConfig(
+                    thinking_level=_thinking_level_to_enum(self._thinking_level),
+                ),
                 temperature=0.0,
             )
 

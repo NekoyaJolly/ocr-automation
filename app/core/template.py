@@ -7,6 +7,7 @@ import yaml
 
 from app.core.exporter import ExporterFactory
 from app.core.ocr_engine import OCREngine
+from app.core.prompt_builder import build_extraction_prompt
 from app.exceptions import TemplateConfigError
 from app.infrastructure.logger import get_logger
 from app.models.template_model import (
@@ -208,11 +209,16 @@ class TemplateEngine:
         """単一テンプレート適用 (OCR + field_placements によるデータ整形)。"""
         result = ocr_engine.process(
             image_path=image_path,
-            extraction_prompt=template.extraction_prompt,
+            extraction_prompt=build_extraction_prompt(template),
             response_schema=template.response_schema,
             license_key=license_key,
         )
-        return self._map_fields(result.extracted_data, template)
+        mapped = self._map_fields(result.extracted_data, template)
+        if result.field_confidences:
+            mapped["__field_confidences__"] = {
+                k: v.model_dump(mode="json") for k, v in result.field_confidences.items()
+            }
+        return mapped
 
     @staticmethod
     def _map_fields(extracted_data: dict[str, Any], template: Template) -> dict[str, Any]:

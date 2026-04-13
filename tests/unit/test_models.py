@@ -53,7 +53,7 @@ class TestTemplate:
             extraction_prompt="テスト用プロンプト",
             response_schema={"type": "object"},
             field_placements=[
-                FieldPlacement(source_key="invoice_no", target="B2"),
+                FieldPlacement(source_key="invoice_no", target="B2", display_name="番号"),
             ],
         )
         assert t.name == "テスト"

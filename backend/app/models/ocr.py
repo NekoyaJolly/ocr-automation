@@ -12,7 +12,7 @@ class OCRExtractRequest(BaseModel):
     image_mime_type: Literal[
         "image/jpeg", "image/png", "image/webp", "image/tiff", "application/pdf"
     ]
-    extraction_prompt: str = Field(..., max_length=5000)
+    extraction_prompt: str = Field(..., max_length=200_000)
     response_schema: dict[str, Any]
 
 
