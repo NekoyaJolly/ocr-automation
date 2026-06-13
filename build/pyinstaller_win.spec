@@ -3,6 +3,10 @@
 import os
 from PyInstaller.utils.hooks import collect_all
 
+# 空のフォルダが git チェックアウト時に存在しない可能性に備えて自動作成
+os.makedirs(os.path.join(SPECPATH, '../templates'), exist_ok=True)
+os.makedirs(os.path.join(SPECPATH, '../template_sets'), exist_ok=True)
+
 # データファイルの定義 (プロジェクトルートからの相対パス)
 # spec ファイルが build/ ディレクトリにあるため、../ を使用
 datas = [
