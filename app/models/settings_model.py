@@ -1,4 +1,4 @@
-"""アプリケーション設定のデータモデル。"""
+"""アプリケーション設定のデータモデル定義。"""
 
 from pathlib import Path
 from typing import Literal
@@ -7,42 +7,30 @@ from pydantic import BaseModel, Field
 
 
 class FolderSettings(BaseModel):
-    """フォルダ設定。"""
+    """フォルダ関連の設定。"""
 
-    input_root: Path = Path.home() / "OCR" / "入力"
-    output_root: Path = Path.home() / "OCR" / "出力"
-    failed_folder: Path = Path.home() / "OCR" / "失敗"
-    processed_folder: Path = Path.home() / "OCR" / "処理済み"
+    input_root: Path | None = Field(default=None, description="入力ルートフォルダ")
+    output_root: Path | None = Field(default=None, description="出力ルートフォルダ")
+    failed_folder: Path | None = Field(default=None, description="失敗フォルダ")
     subfolder_to_set: dict[str, str] = Field(
         default_factory=dict,
-        description=(
-            "入力ルート直下のサブフォルダ名 → テンプレートセット YAML のファイル名(stem)。"
-            "例: 納品書 → default_set (= template_sets/default_set.yaml)"
-        ),
+        description="サブフォルダ名 → テンプレートセット名のマッピング",
     )
 
 
 class PrinterSettings(BaseModel):
-    """プリンタ設定。"""
+    """プリンタ関連の設定。"""
 
     default_printer: str | None = None
-    copies: int = 1
-    auto_print_enabled: bool = False
+    copies: int = Field(default=1, ge=1)
 
 
 class RetrySettings(BaseModel):
-    """リトライ設定。"""
+    """リトライ関連の設定。"""
 
-    max_retries: int = 2
-    initial_backoff_seconds: float = 1.0
-    backoff_multiplier: float = 3.0
-
-
-class BackendSettings(BaseModel):
-    """バックエンド接続設定。"""
-
-    base_url: str = "https://ocr-backend.example.run.app"
-    timeout_seconds: float = 30.0
+    max_retries: int = Field(default=2, ge=0)
+    initial_backoff_seconds: float = Field(default=1.0, gt=0)
+    backoff_multiplier: float = Field(default=3.0, gt=1.0)
 
 
 class AppSettings(BaseModel):
@@ -51,5 +39,4 @@ class AppSettings(BaseModel):
     folders: FolderSettings = Field(default_factory=FolderSettings)
     printer: PrinterSettings = Field(default_factory=PrinterSettings)
     retry: RetrySettings = Field(default_factory=RetrySettings)
-    backend: BackendSettings = Field(default_factory=BackendSettings)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"

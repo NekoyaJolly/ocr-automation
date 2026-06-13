@@ -1,146 +1,180 @@
-"""印刷機能 — 抽象インターフェース + OS 別実装。"""
+"""プリンタ制御モジュール。
 
-import platform
+OS ごとの印刷処理を抽象化し、プリンタ一覧取得およびファイルの印刷を実行する。
+"""
+
+import logging
 import subprocess
+import sys
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from app.exceptions import PrintError
-from app.infrastructure.logger import get_logger
+logger = logging.getLogger(__name__)
 
-logger = get_logger(__name__)
+# pywin32 の遅延インポート用
+win32print = None
+win32api = None
+if sys.platform == "win32":
+    try:
+        import win32api
+        import win32print
+    except ImportError:
+        logger.warning("win32print / win32api がインストールされていません。WindowsPrinter はダミー動作になります。")
 
 
 class Printer(ABC):
-    """印刷の抽象インターフェース。"""
-
-    @abstractmethod
-    def print_file(
-        self,
-        file_path: Path,
-        printer_name: str | None = None,
-        copies: int = 1,
-    ) -> None:
-        """ファイルをプリンタに送信する。"""
-        ...
+    """プリンタ制御の抽象基底クラス。"""
 
     @abstractmethod
     def list_printers(self) -> list[str]:
-        """システムに登録されているプリンタ一覧を返す。"""
+        """システムに登録されているプリンタの一覧を取得する。
+
+        Returns:
+            プリンタ名（文字列）のリスト。
+        """
         ...
 
     @abstractmethod
-    def get_default_printer(self) -> str | None:
-        """デフォルトプリンタ名を返す。"""
-        ...
-
-
-class WindowsPrinter(Printer):
-    """Windows 用プリンタ実装 (pywin32)。"""
-
     def print_file(
-        self,
-        file_path: Path,
-        printer_name: str | None = None,
-        copies: int = 1,
+        self, file_path: Path, printer_name: str | None = None, copies: int = 1
     ) -> None:
-        try:
-            import win32api  # type: ignore[import-not-found]
-            import win32print  # type: ignore[import-not-found]
+        """指定されたファイルを印刷する。
 
-            if printer_name:
-                win32print.SetDefaultPrinter(printer_name)
-
-            for _ in range(copies):
-                win32api.ShellExecute(0, "print", str(file_path), None, ".", 0)
-
-            logger.info("印刷送信: %s (プリンタ: %s, 部数: %d)", file_path, printer_name, copies)
-        except ImportError:
-            raise PrintError("pywin32 がインストールされていません") from None
-        except Exception as e:
-            raise PrintError(f"印刷に失敗しました: {e}") from e
-
-    def list_printers(self) -> list[str]:
-        try:
-            import win32print  # type: ignore[import-not-found]
-
-            printers = win32print.EnumPrinters(
-                win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS
-            )
-            return [p[2] for p in printers]
-        except ImportError:
-            return []
-
-    def get_default_printer(self) -> str | None:
-        try:
-            import win32print  # type: ignore[import-not-found]
-
-            return win32print.GetDefaultPrinter()
-        except (ImportError, RuntimeError):
-            return None
+        Args:
+            file_path: 印刷対象のファイルパス。
+            printer_name: 送信先プリンタ名。None の場合はシステムのデフォルトプリンタを使用。
+            copies: 印刷部数。
+        """
+        ...
 
 
 class MacPrinter(Printer):
-    """macOS 用プリンタ実装 (subprocess + lp)。"""
-
-    def print_file(
-        self,
-        file_path: Path,
-        printer_name: str | None = None,
-        copies: int = 1,
-    ) -> None:
-        if not file_path.exists():
-            raise PrintError(f"ファイルが見つかりません: {file_path}")
-
-        cmd = ["lp"]
-        if printer_name:
-            cmd.extend(["-d", printer_name])
-        cmd.extend(["-n", str(copies)])
-        cmd.append(str(file_path))
-
-        try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=30
-            )
-            if result.returncode != 0:
-                raise PrintError(f"lp コマンドエラー: {result.stderr}")
-            logger.info("印刷送信: %s (プリンタ: %s, 部数: %d)", file_path, printer_name, copies)
-        except subprocess.TimeoutExpired:
-            raise PrintError("印刷コマンドがタイムアウトしました") from None
-        except FileNotFoundError:
-            raise PrintError("lp コマンドが見つかりません") from None
+    """macOS 向けの Printer 実装 (lp/lpstat コマンドを使用)。"""
 
     def list_printers(self) -> list[str]:
         try:
-            result = subprocess.run(
-                ["lpstat", "-p"], capture_output=True, text=True, timeout=10
+            res = subprocess.run(
+                ["lpstat", "-p"],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=5,
             )
-            printers: list[str] = []
-            for line in result.stdout.strip().split("\n"):
+            printers = []
+            for line in res.stdout.splitlines():
                 if line.startswith("printer "):
                     parts = line.split()
                     if len(parts) >= 2:
                         printers.append(parts[1])
-            return printers
-        except Exception:
+            return sorted(printers)
+        except Exception as e:
+            logger.warning(f"macOS プリンタ一覧の取得に失敗しました: {e}")
             return []
 
-    def get_default_printer(self) -> str | None:
+    def print_file(
+        self, file_path: Path, printer_name: str | None = None, copies: int = 1
+    ) -> None:
+        if not file_path.exists():
+            raise FileNotFoundError(f"印刷対象ファイルが見つかりません: {file_path}")
+
+        cmd = ["lp", "-n", str(copies)]
+        if printer_name:
+            cmd.extend(["-d", printer_name])
+        cmd.append(str(file_path))
+
         try:
-            result = subprocess.run(
-                ["lpstat", "-d"], capture_output=True, text=True, timeout=10
-            )
-            line = result.stdout.strip()
-            if ":" in line:
-                return line.split(":")[-1].strip()
-            return None
+            logger.info(f"macOS 印刷コマンド実行: {' '.join(cmd)}")
+            subprocess.run(cmd, check=True, timeout=10)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"lp コマンドの実行に失敗しました: {e}") from e
+
+
+class WindowsPrinter(Printer):
+    """Windows 向けの Printer 実装 (pywin32 を使用)。"""
+
+    def list_printers(self) -> list[str]:
+        if win32print is None:
+            logger.warning("win32print が利用できないため、空のプリンタ一覧を返します。")
+            return []
+
+        try:
+            # ローカル接続およびネットワーク接続のプリンタ一覧を取得
+            flags = win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS
+            printers_info = win32print.EnumPrinters(flags, None, 1)
+            printers = [info[2] for info in printers_info]
+            return sorted(printers)
+        except Exception as e:
+            logger.warning(f"Windows プリンタ一覧の取得に失敗しました: {e}")
+            return []
+
+    def print_file(
+        self, file_path: Path, printer_name: str | None = None, copies: int = 1
+    ) -> None:
+        if win32api is None or win32print is None:
+            raise RuntimeError("win32api / win32print が利用できないため、印刷を実行できません。")
+
+        if not file_path.exists():
+            raise FileNotFoundError(f"印刷対象ファイルが見つかりません: {file_path}")
+
+        old_printer = None
+        if printer_name:
+            try:
+                # 一時的にデフォルトプリンタを変更して ShellExecute 経由の印刷先を制御
+                old_printer = win32print.GetDefaultPrinter()
+                win32print.SetDefaultPrinter(printer_name)
+            except Exception as e:
+                logger.error(f"Windows デフォルトプリンタの設定変更に失敗しました: {e}")
+
+        try:
+            for i in range(copies):
+                logger.info(
+                    f"Windows 印刷実行: {file_path.name} (プリンタ: {printer_name or 'デフォルト'}, 部数: {i+1}/{copies})"
+                )
+                # "print" 動詞でファイルを関連付けソフトで印刷
+                win32api.ShellExecute(0, "print", str(file_path), None, ".", 0)
+                if copies > 1:
+                    time.sleep(1.0)
+        except Exception as e:
+            raise RuntimeError(f"Windows 印刷処理に失敗しました: {e}") from e
+        finally:
+            if old_printer:
+                try:
+                    win32print.SetDefaultPrinter(old_printer)
+                except Exception:
+                    pass
+
+
+class DummyPrinter(Printer):
+    """テストおよびフォールバック用のダミープリンタ実装。"""
+
+    def list_printers(self) -> list[str]:
+        return ["Dummy_Printer_1", "Dummy_Printer_2"]
+
+    def print_file(
+        self, file_path: Path, printer_name: str | None = None, copies: int = 1
+    ) -> None:
+        logger.info(
+            f"[DUMMY PRINT] ファイル印刷を実行しました:\n"
+            f"  パス: {file_path}\n"
+            f"  送信先プリンタ: {printer_name or 'デフォルトプリンタ'}\n"
+            f"  印刷部数: {copies}"
+        )
+
+
+def get_printer() -> Printer:
+    """現在の OS およびライブラリ環境に適合する Printer インスタンスを取得する。"""
+    if sys.platform == "darwin":
+        # Mac 環境で lpstat が動作する場合のみ MacPrinter
+        try:
+            res = subprocess.run(["which", "lpstat"], capture_output=True, text=True)
+            if res.returncode == 0:
+                return MacPrinter()
         except Exception:
-            return None
+            pass
+    elif sys.platform == "win32":
+        if win32print is not None and win32api is not None:
+            return WindowsPrinter()
 
-
-def create_printer() -> Printer:
-    """現在の OS に応じた Printer インスタンスを生成する。"""
-    system = platform.system()
-    if system == "Windows":
-        return WindowsPrinter()
-    return MacPrinter()
+    # フォールバック
+    return DummyPrinter()

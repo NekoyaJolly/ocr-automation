@@ -1,63 +1,29 @@
-"""OCR Automation App のカスタム例外定義。"""
+"""OCR Automation アプリケーション共通の例外クラス定義。"""
 
 
 class OCRAutomationError(Exception):
-    """アプリケーション全体の基底例外。"""
+    """アプリケーション基底例外。"""
 
 
-# --- OCR エンジン関連 ---
-class OCREngineError(OCRAutomationError):
-    """OCR エンジン処理中のエラー。"""
+class OCRError(OCRAutomationError):
+    """OCR 処理に関する例外。"""
 
 
-# --- ライセンス関連 ---
-class LicenseError(OCRAutomationError):
-    """ライセンス関連の基底例外。"""
+class OCREngineInitError(OCRError):
+    """OCR エンジンの初期化に失敗した場合の例外。"""
 
 
-class LicenseNotConfiguredError(LicenseError):
-    """ライセンスキーが未設定。"""
+class OCRProcessError(OCRError):
+    """OCR 処理（推論）に失敗した場合の例外。"""
 
 
-class LicenseInvalidError(LicenseError):
-    """ライセンスキーが無効。"""
+class TemplateError(OCRAutomationError):
+    """テンプレート関連の例外。"""
 
 
-class LicenseExpiredError(LicenseError):
-    """ライセンスキーの有効期限切れ。"""
-
-
-class LicenseQuotaExceededError(LicenseError):
-    """月間利用上限を超過。"""
-
-
-# --- バックエンド通信関連 ---
-class BackendError(OCRAutomationError):
-    """バックエンド通信の基底例外。"""
-
-
-class BackendUnreachableError(BackendError):
-    """バックエンドに接続不能。"""
-
-
-class BackendBadRequestError(BackendError):
-    """バックエンドがリクエストを拒否 (400)。"""
-
-
-# --- テンプレート関連 ---
-class TemplateConfigError(OCRAutomationError):
-    """テンプレート設定の不備。"""
-
-
-class TemplateNotFoundError(TemplateConfigError):
-    """指定されたテンプレートが見つからない。"""
-
-
-# --- エクスポート関連 ---
 class ExportError(OCRAutomationError):
-    """ファイル出力時のエラー。"""
+    """ファイル出力に関する例外。"""
 
 
-# --- 印刷関連 ---
 class PrintError(OCRAutomationError):
-    """印刷処理のエラー。"""
+    """印刷に関する例外。"""

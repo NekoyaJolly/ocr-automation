@@ -1,308 +1,262 @@
-"""出力フォーマット — 抽象 Exporter + 各フォーマット実装。"""
+"""各種フォーマット（TXT, Word, Excel, PDF）への出力を行うエクスポーターモジュール。"""
 
-import json
+import logging
 from abc import ABC, abstractmethod
-from datetime import date, datetime
-from decimal import Decimal
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 from app.exceptions import ExportError
-from app.infrastructure.logger import get_logger
 from app.models.template_model import Template
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
-# Windows のメモ帳・Excel で UTF-8 を誤検出しないよう TXT は BOM 付きで書き出す。
-TXT_ENCODING = "utf-8-sig"
+# サードパーティライブラリの遅延インポート
+try:
+    import docx
+except ImportError:
+    docx = None
 
-# 空ブックへ直接書き込む xlsx で日本語表示を安定させる。ベーステンプレ読込時は既存スタイルを尊重。
-_JP_CELL_FONT: Any = None
+try:
+    import openpyxl
+except ImportError:
+    openpyxl = None
 
-
-def _jp_cell_font() -> Any:
-    global _JP_CELL_FONT
-    if _JP_CELL_FONT is None:
-        from openpyxl.styles import Font
-
-        _JP_CELL_FONT = Font(name="Meiryo", size=11)
-    return _JP_CELL_FONT
-
-
-def _normalize_excel_scalar(value: Any) -> Any:
-    """openpyxl へ渡すスカラーを正規化する。文字列・数値・日付はそのまま保持。"""
-    if value is None:
-        return None
-    if isinstance(value, str | int | float | bool):
-        return value
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    if isinstance(value, Decimal):
-        return float(value)
-    if isinstance(value, datetime | date):
-        return value
-    if isinstance(value, dict | list):
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    return str(value)
+try:
+    import reportlab
+except ImportError:
+    reportlab = None
 
 
 class Exporter(ABC):
-    """出力エクスポーターの抽象インターフェース。"""
+    """ファイル出力を行うエクスポーターの抽象基底クラス。"""
 
     @abstractmethod
-    def export(self, data: dict[str, Any], template: Template, output_path: Path) -> None:
-        """データをファイルに出力する。
+    def export(
+        self, mapped_data: dict[str, Any], template: Template, output_path: Path
+    ) -> None:
+        """データを指定のフォーマットでファイルに書き出す。
 
         Args:
-            data: field_placements で整形済みのデータ。
-            template: テンプレート定義。
-            output_path: 出力先パス。
+            mapped_data: 抽出済みのデータ（項目名 -> 値）
+            template: 適用するテンプレート定義
+            output_path: 書き出し先のファイルパス
+
+        Raises:
+            ExportError: 出力処理中にエラーが発生した場合
         """
         ...
 
+    def _find_template_file(self, filename: str) -> Path | None:
+        """指定されたテンプレートファイルを探索する。
+
+        1. ユーザー定義テンプレートディレクトリ
+        2. アプリケーション内蔵の templates ディレクトリ
+        の順で検索する。
+        """
+        from app.infrastructure.paths import get_user_templates_dir
+
+        # ユーザー設定領域の templates
+        p1 = get_user_templates_dir() / filename
+        if p1.exists():
+            return p1
+
+        # プロジェクトルートの templates
+        p2 = Path(__file__).resolve().parent.parent.parent / "templates" / filename
+        if p2.exists():
+            return p2
+
+        return None
+
 
 class TxtExporter(Exporter):
-    """シンプルな key: value テキスト出力。"""
+    """プレーンテキスト形式でデータを出力するエクスポーター。"""
 
-    def export(self, data: dict[str, Any], template: Template, output_path: Path) -> None:
-        raw = data.get("__raw__", data)
-        lines: list[str] = []
-        for key, value in raw.items():
-            if key == "__raw__":
-                continue
-            if isinstance(value, list):
-                lines.append(f"{key}:")
-                for i, item in enumerate(value):
-                    lines.append(f"  [{i + 1}] {item}")
-            else:
-                lines.append(f"{key}: {value}")
-        output_path.write_text("\n".join(lines), encoding=TXT_ENCODING)
-        logger.info("TXT 出力完了: %s", output_path)
+    def export(
+        self, mapped_data: dict[str, Any], template: Template, output_path: Path
+    ) -> None:
+        try:
+            lines = []
+            for field in template.fields:
+                val = mapped_data.get(field.output_label)
+                val_str = str(val) if val is not None else ""
+                lines.append(f"{field.output_label}: {val_str}")
+
+            output_path.write_text("\n".join(lines), encoding="utf-8")
+        except Exception as e:
+            raise ExportError(f"テキスト出力に失敗しました: {e}") from e
 
 
 class DocxExporter(Exporter):
-    """python-docx でテンプレート docx にプレースホルダを置換して出力。"""
+    """Word (.docx) 形式でデータを出力するエクスポーター。"""
 
-    def export(self, data: dict[str, Any], template: Template, output_path: Path) -> None:
-        from docx import Document
+    def export(
+        self, mapped_data: dict[str, Any], template: Template, output_path: Path
+    ) -> None:
+        if docx is None:
+            raise ExportError(
+                "python-docx がインストールされていないため、Word 出力は利用できません。"
+            )
 
-        raw = data.get("__raw__", {})
+        try:
+            doc = None
+            if template.template_file:
+                temp_path = self._find_template_file(template.template_file)
+                if temp_path:
+                    doc = docx.Document(temp_path)
+                else:
+                    logger.warning(
+                        f"テンプレートファイルが見つかりません: {template.template_file}。新規作成します。"
+                    )
 
-        base_path = (
-            Path(template.base_template_file) if template.base_template_file else None
-        )
-        doc = (
-            Document(str(base_path))
-            if base_path and base_path.exists()
-            else Document()
-        )
+            if doc is None:
+                doc = docx.Document()
+                doc.add_heading(template.name, level=1)
+                for field in template.fields:
+                    val = mapped_data.get(field.output_label)
+                    val_str = str(val) if val is not None else ""
+                    doc.add_paragraph(f"{field.output_label}: {val_str}")
+            else:
+                # プレースホルダーの置換処理
+                for p in doc.paragraphs:
+                    self._replace_placeholders(p, mapped_data)
+                for table in doc.tables:
+                    for row in table.rows:
+                      for cell in row.cells:
+                          for p in cell.paragraphs:
+                              self._replace_placeholders(p, mapped_data)
 
-        for paragraph in doc.paragraphs:
-            for fp in template.field_placements:
-                placeholder = fp.target  # e.g. "{{invoice_no}}"
-                value = raw.get(fp.source_key)
-                if placeholder in paragraph.text and value is not None:
-                    paragraph.text = paragraph.text.replace(placeholder, str(value))
+            doc.save(output_path)
+        except Exception as e:
+            raise ExportError(f"Word 出力に失敗しました: {e}") from e
 
-        for table in doc.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    for fp in template.field_placements:
-                        placeholder = fp.target
-                        value = raw.get(fp.source_key)
-                        if placeholder in cell.text and value is not None:
-                            cell.text = cell.text.replace(placeholder, str(value))
-
-        doc.save(str(output_path))
-        logger.info("DOCX 出力完了: %s", output_path)
+    def _replace_placeholders(self, paragraph: Any, mapped_data: dict[str, Any]) -> None:
+        """段落内の {{項目名}} を実際の値に置換する。"""
+        text = paragraph.text
+        replaced = False
+        for key, val in mapped_data.items():
+            placeholder = f"{{{{{key}}}}}"
+            if placeholder in text:
+                text = text.replace(placeholder, str(val) if val is not None else "")
+                replaced = True
+        if replaced:
+            paragraph.text = text
 
 
 class XlsxExporter(Exporter):
-    """openpyxl でセル単位に値を書き込む。"""
+    """Excel (.xlsx) 形式でデータを出力するエクスポーター。"""
 
-    def export(self, data: dict[str, Any], template: Template, output_path: Path) -> None:
-        from openpyxl import Workbook, load_workbook
-
-        raw = data.get("__raw__", {})
-
-        base_path = (
-            Path(template.base_template_file) if template.base_template_file else None
-        )
-        from_workbook = bool(base_path and base_path.exists())
-        wb = load_workbook(str(base_path)) if from_workbook else Workbook()
-        apply_jp_font = not from_workbook
-
-        ws = wb.active
-        if ws is None:
-            ws = wb.create_sheet()
-
-        for fp in template.field_placements:
-            value = raw.get(fp.source_key)
-            if value is None:
-                continue
-
-            if fp.expand == "rows" and isinstance(value, list):
-                self._expand_rows(ws, fp.target, value, apply_jp_font)
-            elif fp.expand == "cols" and isinstance(value, list):
-                self._expand_cols(ws, fp.target, value, apply_jp_font)
-            else:
-                cell = ws[fp.target]
-                cell.value = _normalize_excel_scalar(value)
-                if apply_jp_font:
-                    cell.font = _jp_cell_font()
-
-        wb.save(str(output_path))
-        logger.info("XLSX 出力完了: %s", output_path)
-
-    @staticmethod
-    def _expand_rows(
-        ws: Any, start_cell: str, items: list[Any], apply_jp_font: bool
+    def export(
+        self, mapped_data: dict[str, Any], template: Template, output_path: Path
     ) -> None:
-        """配列を縦方向に展開する。"""
-        from openpyxl.utils.cell import column_index_from_string, coordinate_from_string
+        if openpyxl is None:
+            raise ExportError(
+                "openpyxl がインストールされていないため、Excel 出力は利用できません。"
+            )
 
-        col_letter, row_num = coordinate_from_string(start_cell)
-        col_idx = column_index_from_string(col_letter)
-        font = _jp_cell_font() if apply_jp_font else None
-
-        for i, item in enumerate(items):
-            if isinstance(item, dict):
-                for j, (_, val) in enumerate(item.items()):
-                    c = ws.cell(
-                        row=row_num + i,
-                        column=col_idx + j,
-                        value=_normalize_excel_scalar(val),
+        try:
+            wb = None
+            if template.template_file:
+                temp_path = self._find_template_file(template.template_file)
+                if temp_path:
+                    wb = openpyxl.load_workbook(temp_path)
+                else:
+                    logger.warning(
+                        f"テンプレートファイルが見つかりません: {template.template_file}。新規作成します。"
                     )
-                    if font is not None:
-                        c.font = font
+
+            if wb is None:
+                wb = openpyxl.Workbook()
+                ws = wb.active
+                ws.title = "OCR 結果"
+                ws.cell(row=1, column=1, value="項目名")
+                ws.cell(row=1, column=2, value="値")
+                for idx, field in enumerate(template.fields, start=2):
+                    ws.cell(row=idx, column=1, value=field.output_label)
+                    val = mapped_data.get(field.output_label)
+                    ws.cell(row=idx, column=2, value=val)
             else:
-                c = ws.cell(
-                    row=row_num + i,
-                    column=col_idx,
-                    value=_normalize_excel_scalar(item),
-                )
-                if font is not None:
-                    c.font = font
+                ws = wb.active
+                for field in template.fields:
+                    val = mapped_data.get(field.output_label)
+                    if field.target_position:
+                        try:
+                            # 'B2' などのセル番地に書き込む
+                            ws[field.target_position] = val
+                        except Exception as e:
+                            logger.error(
+                                f"Excel セル書き込み失敗 ({field.target_position}): {e}"
+                            )
 
-    @staticmethod
-    def _expand_cols(
-        ws: Any, start_cell: str, items: list[Any], apply_jp_font: bool
-    ) -> None:
-        """配列を横方向に展開する。"""
-        from openpyxl.utils.cell import column_index_from_string, coordinate_from_string
-
-        col_letter, row_num = coordinate_from_string(start_cell)
-        col_idx = column_index_from_string(col_letter)
-        font = _jp_cell_font() if apply_jp_font else None
-
-        for i, item in enumerate(items):
-            if isinstance(item, dict):
-                for j, (_, val) in enumerate(item.items()):
-                    c = ws.cell(
-                        row=row_num + j,
-                        column=col_idx + i,
-                        value=_normalize_excel_scalar(val),
-                    )
-                    if font is not None:
-                        c.font = font
-            else:
-                c = ws.cell(
-                    row=row_num,
-                    column=col_idx + i,
-                    value=_normalize_excel_scalar(item),
-                )
-                if font is not None:
-                    c.font = font
+            wb.save(output_path)
+        except Exception as e:
+            raise ExportError(f"Excel 出力に失敗しました: {e}") from e
 
 
 class PdfExporter(Exporter):
-    """pypdf でテンプレート PDF のフォームフィールドに値を書き込む。"""
+    """PDF 形式でデータを出力するエクスポーター。"""
 
-    def export(self, data: dict[str, Any], template: Template, output_path: Path) -> None:
-        raw = data.get("__raw__", {})
-
-        if not template.base_template_file:
-            self._create_simple_pdf(raw, template, output_path)
-            return
-
-        base_path = Path(template.base_template_file)
-        if not base_path.exists():
-            self._create_simple_pdf(raw, template, output_path)
-            return
-
-        from pypdf import PdfReader, PdfWriter
-
-        reader = PdfReader(str(base_path))
-        writer = PdfWriter()
-        writer.append_pages_from_reader(reader)
-
-        field_values: dict[str, str] = {}
-        for fp in template.field_placements:
-            value = raw.get(fp.source_key)
-            if value is not None:
-                field_values[fp.target] = str(value)
-
-        if field_values:
-            for page_num in range(len(writer.pages)):
-                writer.update_page_form_field_values(writer.pages[page_num], field_values)
-
-        with open(output_path, "wb") as f:
-            writer.write(f)
-
-        logger.info("PDF 出力完了: %s", output_path)
-
-    @staticmethod
-    def _create_simple_pdf(
-        raw: dict[str, Any], template: Template, output_path: Path
+    def export(
+        self, mapped_data: dict[str, Any], template: Template, output_path: Path
     ) -> None:
-        """ベーステンプレートなしの場合、シンプルなテキスト PDF を生成。"""
-        from reportlab.lib.pagesizes import A4
-        from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.ttfonts import TTFont
-        from reportlab.pdfgen import canvas
-
-        c = canvas.Canvas(str(output_path), pagesize=A4)
-        _width, height = A4
-        y = height - 50
+        if reportlab is None:
+            raise ExportError(
+                "reportlab がインストールされていないため、PDF 出力は利用できません。"
+            )
 
         try:
-            pdfmetrics.registerFont(TTFont("IPAGothic", "ipag.ttf"))
-            c.setFont("IPAGothic", 12)
-        except Exception:
-            c.setFont("Helvetica", 12)
+            from reportlab.lib.pagesizes import A4
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.cidfonts import CIDFont
+            from reportlab.pdfgen import canvas
 
-        for fp in template.field_placements:
-            value = raw.get(fp.source_key)
-            if value is not None:
-                c.drawString(50, y, f"{fp.source_key}: {value}")
-                y -= 20
+            # 日本語用フォント登録
+            font_name = "Helvetica"
+            try:
+                pdfmetrics.registerFont(CIDFont("HeiseiKakuGo-W5"))
+                font_name = "HeiseiKakuGo-W5"
+            except Exception:
+                logger.warning(
+                    "HeiseiKakuGo-W5 日本語フォント登録に失敗しました。英語フォントで描画します。"
+                )
+
+            c = canvas.Canvas(str(output_path), pagesize=A4)
+            width, height = A4
+
+            # ヘッダータイトル
+            c.setFont(font_name, 18)
+            c.drawString(50, height - 50, template.name)
+
+            # 各項目を描画
+            c.setFont(font_name, 12)
+            y = height - 100
+            for field in template.fields:
+                val = mapped_data.get(field.output_label)
+                val_str = str(val) if val is not None else ""
+                c.drawString(50, y, f"{field.output_label}: {val_str}")
+                y -= 25
                 if y < 50:
                     c.showPage()
+                    c.setFont(font_name, 12)
                     y = height - 50
 
-        c.save()
-        logger.info("PDF (テキスト) 出力完了: %s", output_path)
+            c.save()
+        except Exception as e:
+            raise ExportError(f"PDF 出力に失敗しました: {e}") from e
 
 
 class ExporterFactory:
-    """出力フォーマットに応じた Exporter を生成する。"""
+    """出力フォーマット名に基づいて適切なエクスポーターインスタンスを生成するファクトリ。"""
 
-    _exporters: ClassVar[dict[str, type[Exporter]]] = {
-        "txt": TxtExporter,
-        "docx": DocxExporter,
-        "xlsx": XlsxExporter,
-        "pdf": PdfExporter,
-    }
-
-    @classmethod
-    def create(cls, format_name: str) -> Exporter:
-        """フォーマット名から Exporter インスタンスを生成する。"""
-        exporter_cls = cls._exporters.get(format_name)
-        if exporter_cls is None:
-            raise ExportError(f"未対応の出力フォーマット: {format_name}")
-        return exporter_cls()
-
-    @classmethod
-    def supported_formats(cls) -> list[str]:
-        """サポートされているフォーマット一覧を返す。"""
-        return list(cls._exporters.keys())
+    @staticmethod
+    def create(format_name: str) -> Exporter:
+        match format_name.lower():
+            case "txt":
+                return TxtExporter()
+            case "docx":
+                return DocxExporter()
+            case "xlsx":
+                return XlsxExporter()
+            case "pdf":
+                return PdfExporter()
+            case _:
+                raise ExportError(f"サポートされていない出力形式です: {format_name}")

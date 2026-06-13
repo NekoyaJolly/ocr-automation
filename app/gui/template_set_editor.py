@@ -1,17 +1,17 @@
-"""テンプレートセットエディタ画面。"""
+"""テンプレートセットエディタパネル。
 
-import traceback
-from pathlib import Path
+テンプレートセット（複数のテンプレートと出力・印刷設定の組み合わせ）の新規作成・複製・削除・編集を行う。
+"""
 
-import yaml
-from PySide6.QtCore import Qt, Signal, Slot
+import logging
+from PySide6.QtCore import Qt, Slot
 from PySide6.QtWidgets import (
+    QComboBox,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
-    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QSplitter,
@@ -21,250 +21,305 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.core.template import load_template_set
-from app.infrastructure.logger import get_logger
-from app.infrastructure.paths import get_user_template_sets_dir
+from app.controllers.app_controller import AppController
 from app.models.template_model import TemplateSet, TemplateSetEntry
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
-class TemplateSetEditorWidget(QWidget):
-    """テンプレートセットの作成・編集・削除を行うエディタ画面。"""
+class TemplateSetEditorPanel(QWidget):
+    """テンプレートセットの管理および紐付け設定を編集する UI パネル。"""
 
-    set_saved = Signal(str)
-
-    def __init__(
-        self,
-        available_templates: list[str] | None = None,
-        parent: QWidget | None = None,
-    ) -> None:
+    def __init__(self, controller: AppController, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._available_templates = available_templates or []
+        self._controller = controller
+        self._current_set: TemplateSet | None = None
         self._setup_ui()
-        self._refresh_list()
-
-    def set_available_templates(self, names: list[str]) -> None:
-        self._available_templates = names
+        self.refresh_list()
 
     def _setup_ui(self) -> None:
-        layout = QHBoxLayout(self)
+        main_layout = QHBoxLayout(self)
 
-        splitter = QSplitter()
+        # 左右スプリッター
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_layout.addWidget(splitter)
 
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        left_layout.addWidget(QLabel("セット一覧"))
-        self._list = QListWidget()
-        self._list.currentItemChanged.connect(self._on_selection_changed)
-        left_layout.addWidget(self._list, stretch=1)
+        # --- 左ペイン: セット一覧 ---
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
 
-        btn_row = QHBoxLayout()
-        new_btn = QPushButton("新規")
-        new_btn.clicked.connect(self._new_set)
-        btn_row.addWidget(new_btn)
-        del_btn = QPushButton("削除")
-        del_btn.clicked.connect(self._delete_set)
-        btn_row.addWidget(del_btn)
-        left_layout.addLayout(btn_row)
+        left_layout.addWidget(QLabel("テンプレートセット一覧"))
 
-        splitter.addWidget(left)
+        self._set_list = QListWidget()
+        self._set_list.itemSelectionChanged.connect(self._on_selection_changed)
+        left_layout.addWidget(self._set_list)
 
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
+        # 操作ボタン
+        btn_layout = QHBoxLayout()
+        self._new_btn = QPushButton("新規")
+        self._copy_btn = QPushButton("複製")
+        self._delete_btn = QPushButton("削除")
 
-        basic_group = QGroupBox("セット基本情報")
+        self._new_btn.clicked.connect(self._on_new)
+        self._copy_btn.clicked.connect(self._on_copy)
+        self._delete_btn.clicked.connect(self._on_delete)
+
+        btn_layout.addWidget(self._new_btn)
+        btn_layout.addWidget(self._copy_btn)
+        btn_layout.addWidget(self._delete_btn)
+        left_layout.addLayout(btn_layout)
+
+        splitter.addWidget(left_widget)
+
+        # --- 右ペイン: 編集フォーム ---
+        self._right_widget = QWidget()
+        right_layout = QVBoxLayout(self._right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+
+        # 1. 基本設定
+        basic_group = QGroupBox("基本設定")
         basic_layout = QVBoxLayout(basic_group)
-        name_row = QHBoxLayout()
-        name_row.addWidget(QLabel("名前:"))
+
+        # セット名
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(QLabel("セット名:"))
         self._name_edit = QLineEdit()
-        name_row.addWidget(self._name_edit, stretch=1)
-        basic_layout.addLayout(name_row)
-        desc_row = QHBoxLayout()
-        desc_row.addWidget(QLabel("説明:"))
+        name_layout.addWidget(self._name_edit)
+        basic_layout.addLayout(name_layout)
+
+        # 説明
+        desc_layout = QHBoxLayout()
+        desc_layout.addWidget(QLabel("説明:"))
         self._desc_edit = QLineEdit()
-        desc_row.addWidget(self._desc_edit, stretch=1)
-        basic_layout.addLayout(desc_row)
+        desc_layout.addWidget(self._desc_edit)
+        basic_layout.addLayout(desc_layout)
+
         right_layout.addWidget(basic_group)
 
-        entries_group = QGroupBox("エントリ (テンプレート)")
+        # 2. テンプレートエントリリスト
+        entries_group = QGroupBox("適用テンプレートと個別設定")
         entries_layout = QVBoxLayout(entries_group)
 
-        self._entries_table = QTableWidget(0, 5)
-        self._entries_table.setHorizontalHeaderLabels([
-            "テンプレート名", "有効", "出力サブフォルダ", "自動印刷", "プリンタ"
-        ])
-        entries_layout.addWidget(self._entries_table, stretch=1)
+        self._entries_table = QTableWidget()
+        self._entries_table.setColumnCount(5)
+        self._entries_table.setHorizontalHeaderLabels(
+            ["適用するテンプレート", "有効", "出力先サブフォルダ", "自動印刷", "使用プリンタ(空でデフォルト)"]
+        )
+        entries_layout.addWidget(self._entries_table)
 
-        entry_btn_row = QHBoxLayout()
-        add_entry_btn = QPushButton("エントリ追加")
-        add_entry_btn.clicked.connect(self._add_entry_row)
-        entry_btn_row.addWidget(add_entry_btn)
-        rm_entry_btn = QPushButton("エントリ削除")
-        rm_entry_btn.clicked.connect(self._remove_entry_row)
-        entry_btn_row.addWidget(rm_entry_btn)
-        entry_btn_row.addStretch()
-        entries_layout.addLayout(entry_btn_row)
+        # 操作ボタン
+        table_btn_layout = QHBoxLayout()
+        self._add_row_btn = QPushButton("テンプレート追加")
+        self._del_row_btn = QPushButton("削除")
+        self._add_row_btn.clicked.connect(self._on_add_row)
+        self._del_row_btn.clicked.connect(self._on_del_row)
+        table_btn_layout.addWidget(self._add_row_btn)
+        table_btn_layout.addWidget(self._del_row_btn)
+        table_btn_layout.addStretch()
+        entries_layout.addLayout(table_btn_layout)
 
-        right_layout.addWidget(entries_group, stretch=1)
+        right_layout.addWidget(entries_group)
 
-        save_btn = QPushButton("保存")
-        save_btn.clicked.connect(self._save_set)
-        right_layout.addWidget(save_btn)
+        # 保存ボタン
+        self._save_btn = QPushButton("保存")
+        self._save_btn.clicked.connect(self._on_save)
+        self._save_btn.setMinimumHeight(40)
+        right_layout.addWidget(self._save_btn)
 
-        splitter.addWidget(right)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 3)
+        splitter.addWidget(self._right_widget)
 
-        layout.addWidget(splitter)
+        splitter.setSizes([200, 500])
 
-    def _refresh_list(self) -> None:
-        self._list.clear()
-        sets_dir = get_user_template_sets_dir()
-        bundled_dir = Path(__file__).parent.parent.parent / "template_sets"
+        self._right_widget.setEnabled(False)
 
-        for d in [bundled_dir, sets_dir]:
-            if not d.exists():
-                continue
-            for f in sorted(d.glob("*.yaml")):
-                try:
-                    ts = load_template_set(f)
-                    item = QListWidgetItem(ts.name)
-                    item.setData(256, str(f))
-                    self._list.addItem(item)
-                except Exception:
-                    pass
+    def refresh_list(self) -> None:
+        """セット一覧を再読み込みしてリストを更新する。"""
+        self._set_list.clear()
+        sets = self._controller.get_available_template_sets()
+        for name in sets:
+            self._set_list.addItem(name)
+        self._right_widget.setEnabled(False)
+        self._current_set = None
 
     @Slot()
     def _on_selection_changed(self) -> None:
-        item = self._list.currentItem()
-        if item is None:
+        """選択変更時にフォームにロード。"""
+        selected_items = self._set_list.selectedItems()
+        if not selected_items:
+            self._right_widget.setEnabled(False)
             return
-        path = Path(item.data(256))
-        try:
-            ts = load_template_set(path)
-            self._load_to_form(ts)
-        except Exception as e:
-            logger.exception("テンプレートセットの読み込みに失敗しました: %s", path)
-            box = QMessageBox(self)
-            box.setWindowTitle("読み込みエラー")
-            box.setIcon(QMessageBox.Icon.Warning)
-            box.setText(str(e))
-            box.setInformativeText(
-                "「詳細を表示」から全文をコピーできます。"
-                " ログタブ・%APPDATA%\\OCRAutomation\\logs\\ にも記録されます。"
-            )
-            box.setDetailedText(traceback.format_exc())
-            box.exec()
 
-    def _load_to_form(self, ts: TemplateSet) -> None:
-        self._name_edit.setText(ts.name)
-        self._desc_edit.setText(ts.description)
+        name = selected_items[0].text()
+        tset = self._controller.load_template_set_by_name(name)
+        if tset:
+            self._current_set = tset
+            self._load_set_to_form(tset)
+            self._right_widget.setEnabled(True)
+            self._name_edit.setEnabled(False)  # 既存セットの名前変更は不可
+
+    def _load_set_to_form(self, tset: TemplateSet) -> None:
+        """モデルをフォームに反映。"""
+        self._name_edit.setText(tset.name)
+        self._desc_edit.setText(tset.description)
+
         self._entries_table.setRowCount(0)
-        for entry in ts.entries:
-            self._add_entry_data(entry)
+        for entry in tset.entries:
+            self._add_row_with_data(entry)
 
-    def _add_entry_data(self, entry: TemplateSetEntry) -> None:
+    def _add_row_with_data(self, entry: TemplateSetEntry | None = None) -> None:
+        """エントリーテーブルに 1 行追加。"""
         row = self._entries_table.rowCount()
         self._entries_table.insertRow(row)
-        self._entries_table.setItem(row, 0, QTableWidgetItem(entry.template_name))
+
+        # 適用テンプレート選択コンボボックス
+        tmpl_combo = QComboBox()
+        templates = self._controller.get_available_templates()
+        tmpl_combo.addItems(templates)
+        if entry:
+            tmpl_combo.setCurrentText(entry.template_name)
+        self._entries_table.setCellWidget(row, 0, tmpl_combo)
+
+        # 有効チェックボックス
         enabled_item = QTableWidgetItem()
-        enabled_item.setCheckState(
-            Qt.CheckState.Checked if entry.enabled else Qt.CheckState.Unchecked
-        )
+        enabled_item.setFlags(enabled_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        is_checked = entry.enabled if entry else True
+        enabled_item.setCheckState(Qt.CheckState.Checked if is_checked else Qt.CheckState.Unchecked)
         self._entries_table.setItem(row, 1, enabled_item)
-        self._entries_table.setItem(row, 2, QTableWidgetItem(entry.output_subfolder))
+
+        # 出力先サブフォルダ
+        subfolder_item = QTableWidgetItem(entry.output_subfolder if entry else "")
+        self._entries_table.setItem(row, 2, subfolder_item)
+
+        # 自動印刷チェックボックス
         print_item = QTableWidgetItem()
-        print_item.setCheckState(
-            Qt.CheckState.Checked if entry.auto_print else Qt.CheckState.Unchecked
-        )
+        print_item.setFlags(print_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        is_print = entry.auto_print if entry else False
+        print_item.setCheckState(Qt.CheckState.Checked if is_print else Qt.CheckState.Unchecked)
         self._entries_table.setItem(row, 3, print_item)
-        self._entries_table.setItem(row, 4, QTableWidgetItem(entry.printer_name or ""))
+
+        # 使用プリンタ
+        printer_item = QTableWidgetItem(entry.printer_name if (entry and entry.printer_name) else "")
+        self._entries_table.setItem(row, 4, printer_item)
 
     @Slot()
-    def _add_entry_row(self) -> None:
-        self._add_entry_data(TemplateSetEntry(
-            template_name="", output_subfolder=""
-        ))
+    def _on_add_row(self) -> None:
+        templates = self._controller.get_available_templates()
+        if not templates:
+            QMessageBox.warning(self, "警告", "利用可能なテンプレートがありません。先にテンプレートを作成してください。")
+            return
+        self._add_row_with_data(None)
 
     @Slot()
-    def _remove_entry_row(self) -> None:
-        current = self._entries_table.currentRow()
-        if current >= 0:
-            self._entries_table.removeRow(current)
-
-    def _get_entries(self) -> list[TemplateSetEntry]:
-        entries: list[TemplateSetEntry] = []
-        for row in range(self._entries_table.rowCount()):
-            name_item = self._entries_table.item(row, 0)
-            enabled_item = self._entries_table.item(row, 1)
-            sub_item = self._entries_table.item(row, 2)
-            print_item = self._entries_table.item(row, 3)
-            printer_item = self._entries_table.item(row, 4)
-
-            tname = name_item.text().strip() if name_item else ""
-            if not tname:
-                continue
-
-            entries.append(TemplateSetEntry(
-                template_name=tname,
-                enabled=(
-                    enabled_item.checkState() == Qt.CheckState.Checked
-                    if enabled_item
-                    else True
-                ),
-                output_subfolder=sub_item.text().strip() if sub_item else "",
-                auto_print=(
-                    print_item.checkState() == Qt.CheckState.Checked
-                    if print_item
-                    else False
-                ),
-                printer_name=printer_item.text().strip() or None if printer_item else None,
-            ))
-        return entries
+    def _on_del_row(self) -> None:
+        current_row = self._entries_table.currentRow()
+        if current_row >= 0:
+            self._entries_table.removeRow(current_row)
 
     @Slot()
-    def _save_set(self) -> None:
-        name = self._name_edit.text().strip()
-        if not name:
-            QMessageBox.warning(self, "入力エラー", "名前を入力してください")
+    def _on_new(self) -> None:
+        templates = self._controller.get_available_templates()
+        if not templates:
+            QMessageBox.warning(self, "警告", "利用可能なテンプレートがありません。先にテンプレートを作成してください。")
             return
 
-        ts = TemplateSet(
-            name=name,
-            description=self._desc_edit.text(),
-            entries=self._get_entries(),
-        )
+        self._set_list.clearSelection()
+        self._current_set = None
 
-        out_dir = get_user_template_sets_dir()
-        safe_name = name.replace("/", "_").replace("\\", "_")
-        path = out_dir / f"{safe_name}.yaml"
+        self._name_edit.setText("新規テンプレートセット")
+        self._name_edit.setEnabled(True)
+        self._desc_edit.setText("")
 
-        data = ts.model_dump(mode="json")
-        path.write_text(
-            yaml.dump(data, allow_unicode=True, default_flow_style=False),
-            encoding="utf-8",
-        )
-        self.set_saved.emit(name)
-        self._refresh_list()
-        QMessageBox.information(self, "保存完了", f"セットを保存しました: {path.name}")
-
-    @Slot()
-    def _new_set(self) -> None:
-        self._name_edit.clear()
-        self._desc_edit.clear()
         self._entries_table.setRowCount(0)
+        self._right_widget.setEnabled(True)
+        self._name_edit.setFocus()
 
     @Slot()
-    def _delete_set(self) -> None:
-        item = self._list.currentItem()
-        if item is None:
+    def _on_copy(self) -> None:
+        if not self._current_set:
             return
-        path = Path(item.data(256))
-        reply = QMessageBox.question(self, "削除確認", f"{item.text()} を削除しますか?")
+
+        copied = self._current_set.model_copy(deep=True)
+        copied.name = f"{copied.name}_copy"
+
+        self._current_set = copied
+        self._load_set_to_form(copied)
+        self._name_edit.setEnabled(True)
+        self._name_edit.setFocus()
+        self._set_list.clearSelection()
+
+    @Slot()
+    def _on_delete(self) -> None:
+        selected_items = self._set_list.selectedItems()
+        if not selected_items:
+            return
+
+        name = selected_items[0].text()
+        reply = QMessageBox.question(
+            self,
+            "削除確認",
+            f"テンプレートセット '{name}' を削除しますか？\n(設定されている YAML ファイルが物理的に削除されます)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+
         if reply == QMessageBox.StandardButton.Yes:
             try:
-                path.unlink()
-                self._refresh_list()
+                self._controller.delete_template_set(name)
+                self.refresh_list()
             except Exception as e:
-                QMessageBox.warning(self, "削除エラー", str(e))
+                QMessageBox.critical(self, "エラー", f"削除に失敗しました: {e}")
+
+    @Slot()
+    def _on_save(self) -> None:
+        name = self._name_edit.text().strip()
+        if not name or name == "新規テンプレートセット":
+            QMessageBox.warning(self, "警告", "有効なテンプレートセット名を入力してください。")
+            return
+
+        if self._entries_table.rowCount() == 0:
+            QMessageBox.warning(self, "警告", "セットに含めるテンプレートを 1 つ以上登録してください。")
+            return
+
+        entries = []
+        for row in range(self._entries_table.rowCount()):
+            # テーブルの値を取得
+            tmpl_name = self._entries_table.cellWidget(row, 0).currentText()
+            enabled = self._entries_table.item(row, 1).checkState() == Qt.CheckState.Checked
+            subfolder = self._get_item_text(row, 2)
+            auto_print = self._entries_table.item(row, 3).checkState() == Qt.CheckState.Checked
+            printer = self._get_item_text(row, 4) or None
+
+            if not tmpl_name:
+                QMessageBox.warning(self, "警告", f"{row + 1}行目のテンプレートが選択されていません。")
+                return
+
+            entries.append(
+                TemplateSetEntry(
+                    template_name=tmpl_name,
+                    enabled=enabled,
+                    output_subfolder=subfolder,
+                    auto_print=auto_print,
+                    printer_name=printer,
+                )
+            )
+
+        # TemplateSet モデル構築
+        tset = TemplateSet(
+            name=name,
+            description=self._desc_edit.text().strip(),
+            entries=entries,
+        )
+
+        try:
+            self._controller.save_template_set(tset)
+            QMessageBox.information(self, "成功", "テンプレートセットを保存しました。")
+            self.refresh_list()
+            items = self._set_list.findItems(name, Qt.MatchFlag.MatchExactly)
+            if items:
+                self._set_list.setCurrentItem(items[0])
+        except Exception as e:
+            QMessageBox.critical(self, "エラー", f"保存に失敗しました:\n{e}")
+
+    def _get_item_text(self, row: int, col: int) -> str:
+        item = self._entries_table.item(row, col)
+        return item.text().strip() if item else ""

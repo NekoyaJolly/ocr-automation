@@ -1,243 +1,178 @@
-"""テンプレートエンジン — テンプレート読み込み・適用ロジック。"""
+"""テンプレート適用およびデータ抽出を行うコアモジュール。"""
 
-from pathlib import Path
+import logging
+import re
+from datetime import datetime
 from typing import Any
 
-import yaml
+from app.exceptions import TemplateError
+from app.models.ocr_result_model import OCRResult
+from app.models.template_model import FieldMapping, Template, TemplateSet
 
-from app.core.exporter import ExporterFactory
-from app.core.ocr_engine import OCREngine
-from app.core.prompt_builder import build_extraction_prompt
-from app.exceptions import TemplateConfigError
-from app.infrastructure.logger import get_logger
-from app.models.template_model import (
-    Template,
-    TemplateApplicationResult,
-    TemplateSet,
-    TemplateSetEntry,
-)
-
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
-def format_available_keys_hint(keys: list[str], *, max_show: int = 30) -> str:
-    """エラーメッセージ用に利用可能キー一覧を整形する。"""
-    sorted_keys = sorted(keys)
-    if len(sorted_keys) <= max_show:
-        return ", ".join(sorted_keys)
-    head = ", ".join(sorted_keys[:max_show])
-    return f"{head}, … (他 {len(sorted_keys) - max_show} 件)"
+def get_intersection_area(
+    box1: tuple[int, int, int, int], box2: tuple[int, int, int, int]
+) -> int:
+    """2つの境界ボックス（x, y, w, h）の重なり合う面積を計算する。"""
+    x1, y1, w1, h1 = box1
+    x2, y2, w2, h2 = box2
 
+    x_left = max(x1, x2)
+    y_top = max(y1, y2)
+    x_right = min(x1 + w1, x2 + w2)
+    y_bottom = min(y1 + h1, y2 + h2)
 
-def load_template(path: Path) -> Template:
-    """YAML ファイルからテンプレートを読み込む。"""
-    try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-        return Template.model_validate(raw)
-    except Exception as e:
-        raise TemplateConfigError(f"テンプレートの読み込みに失敗: {path} — {e}") from e
+    if x_right <= x_left or y_bottom <= y_top:
+        return 0
 
-
-def load_template_set(path: Path) -> TemplateSet:
-    """YAML ファイルからテンプレートセットを読み込む。"""
-    try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-        return TemplateSet.model_validate(raw)
-    except Exception as e:
-        raise TemplateConfigError(f"テンプレートセットの読み込みに失敗: {path} — {e}") from e
-
-
-def load_all_templates(directories: list[Path]) -> dict[str, Template]:
-    """複数ディレクトリからテンプレートを一括読み込みする。
-
-    辞書のキーは各 YAML ファイルの名前 (拡張子なしの stem)。
-    ``name`` フィールドは GUI 表示用として YAML 内に残す。
-    """
-    templates: dict[str, Template] = {}
-    for dir_path in directories:
-        if not dir_path.exists():
-            continue
-        for yaml_file in sorted(dir_path.glob("*.yaml")):
-            try:
-                tmpl = load_template(yaml_file)
-                stem = yaml_file.stem
-                if stem in templates:
-                    logger.info(
-                        "テンプレートキー '%s' を上書き: %s (既存を置き換え)",
-                        stem,
-                        yaml_file,
-                    )
-                templates[stem] = tmpl
-            except TemplateConfigError:
-                logger.exception("テンプレート読み込みスキップ: %s", yaml_file)
-    return templates
-
-
-def load_all_template_sets(directories: list[Path]) -> dict[str, TemplateSet]:
-    """複数ディレクトリからテンプレートセットを一括読み込みする。
-
-    辞書のキーは各 YAML ファイルの名前 (拡張子なしの stem)。
-    ``name`` フィールドは GUI 表示用として YAML 内に残す。
-    """
-    sets: dict[str, TemplateSet] = {}
-    for dir_path in directories:
-        if not dir_path.exists():
-            continue
-        for yaml_file in sorted(dir_path.glob("*.yaml")):
-            try:
-                ts = load_template_set(yaml_file)
-                stem = yaml_file.stem
-                if stem in sets:
-                    logger.info(
-                        "テンプレートセットキー '%s' を上書き: %s (既存を置き換え)",
-                        stem,
-                        yaml_file,
-                    )
-                sets[stem] = ts
-            except TemplateConfigError:
-                logger.exception("テンプレートセット読み込みスキップ: %s", yaml_file)
-    return sets
+    return (x_right - x_left) * (y_bottom - y_top)
 
 
 class TemplateEngine:
-    """テンプレート適用エンジン。"""
+    """OCR 結果に対してテンプレートの定義を適用し、フィールドごとの値を抽出するクラス。"""
 
-    def apply_set(
-        self,
-        ocr_engine: OCREngine,
-        image_path: Path,
-        template_set: TemplateSet,
-        templates_by_name: dict[str, Template],
-        output_root: Path,
-        license_key: str,
-    ) -> list[TemplateApplicationResult]:
-        """セット内の有効な各テンプレートを適用し、結果リストを返す。
+    def apply_single(self, ocr_result: OCRResult, template: Template) -> dict[str, Any]:
+        """単一のテンプレートを OCR 結果に適用し、抽出されたデータのディクショナリを返す。
 
-        部分成功を許容: 一部テンプレートが失敗しても他は続行する。
+        Args:
+            ocr_result: OCR 処理結果
+            template: 適用するテンプレート定義
+
+        Returns:
+            フィールド名をキー、抽出・変換された値をバリューとする辞書
+
+        Raises:
+            TemplateError: テンプレート適用中に致命的なエラーが発生した場合
         """
-        results: list[TemplateApplicationResult] = []
-        available = format_available_keys_hint(list(templates_by_name.keys()))
+        logger.info(f"テンプレート適用を開始: {template.name}")
+        extracted_data: dict[str, Any] = {}
 
-        for entry in template_set.entries:
-            if not entry.enabled:
-                continue
-
-            template = templates_by_name.get(entry.template_name)
-            if template is None:
-                results.append(
-                    TemplateApplicationResult(
-                        template_name=entry.template_name,
-                        status="failed",
-                        error_message=(
-                            f"テンプレートが見つかりません: キー {entry.template_name!r}。"
-                            f" 利用可能なテンプレートキー: [{available}]"
-                        ),
-                    )
+        for field in template.fields:
+            try:
+                raw_value = self._extract_field_value(ocr_result, field)
+                converted_value = self._convert_value(raw_value, field)
+                extracted_data[field.output_label] = converted_value
+                logger.debug(
+                    f"フィールド抽出完了: {field.output_label} -> {converted_value} (元データ: '{raw_value}')"
                 )
-                continue
+            except Exception as e:
+                logger.exception(f"フィールド '{field.output_label}' の抽出に失敗しました")
+                # フィールド単体のエラーはログに記録し、None として処理を継続（部分成功のため）
+                extracted_data[field.output_label] = None
 
-            result = self._apply_single_entry(
-                ocr_engine=ocr_engine,
-                image_path=image_path,
-                entry=entry,
-                template=template,
-                output_root=output_root,
-                license_key=license_key,
-            )
-            results.append(result)
+        return extracted_data
 
-        return results
+    def _extract_field_value(self, ocr_result: OCRResult, field: FieldMapping) -> str:
+        """指定されたマッピング方法（位置またはキーワード）で値を抽出する。"""
+        if field.extraction_type == "position":
+            if not field.bbox:
+                logger.warning(f"位置ベース抽出が指定されていますが bbox が未設定です: {field.output_label}")
+                return ""
+            return self._extract_by_position(ocr_result, field.bbox)
+        else:
+            return self._extract_by_keyword(ocr_result, field.source_key)
 
-    def _apply_single_entry(
-        self,
-        ocr_engine: OCREngine,
-        image_path: Path,
-        entry: TemplateSetEntry,
-        template: Template,
-        output_root: Path,
-        license_key: str,
-    ) -> TemplateApplicationResult:
-        """単一テンプレートエントリを適用する。"""
-        entry_key = entry.template_name
+    def _extract_by_position(self, ocr_result: OCRResult, target_bbox: tuple[int, int, int, int]) -> str:
+        """指定された矩形領域に重なる OCR ブロックからテキストを抽出する。"""
+        best_block = None
+        max_intersection = 0
+
+        for block in ocr_result.blocks:
+            intersection = get_intersection_area(block.bbox, target_bbox)
+            if intersection > max_intersection:
+                max_intersection = intersection
+                best_block = block
+
+        # 重なりが一定以上ある場合にそのテキストを返す
+        if best_block and max_intersection > 0:
+            # 簡易的に、重なり面積が最大だったブロックのテキストを採用
+            return best_block.text
+
+        return ""
+
+    def _extract_by_keyword(self, ocr_result: OCRResult, source_key: str) -> str:
+        """キーワード（または正規表現）を用いて、OCR結果のテキスト全体から値を抽出する。"""
+        raw_text = ocr_result.raw_text
+
+        # 1. まず正規表現としてのマッチを試みる (グループ指定がある場合のみ)
         try:
-            extracted = self.apply_single(ocr_engine, image_path, template, license_key)
+            if "(" in source_key and ")" in source_key:
+                pattern = re.compile(source_key)
+                match = pattern.search(raw_text)
+                if match and match.groups():
+                    # グループ指定がある場合は最初のグループを返す
+                    return match.group(1).strip()
+        except re.error:
+            # 正規表現として無効な場合は、通常の文字列検索へフォールバック
+            pass
 
-            output_path = self.export_mapped_entry(
-                mapped=extracted,
-                template=template,
-                entry=entry,
-                output_root=output_root,
-            )
+        # 2. 通常の文字列前方一致・部分一致による抽出
+        if source_key in raw_text:
+            idx = raw_text.find(source_key)
+            start = idx + len(source_key)
+            suffix_text = raw_text[start:]
+            # 最初の改行までのテキストを取得
+            line = suffix_text.split("\n")[0]
+            # コロン、スペース、イコールなどの区切り文字を除去
+            line = re.sub(r"^[\s:：\-\=・]+", "", line)
+            return line.strip()
 
-            logger.info("テンプレート適用成功: %s (%s) → %s", entry_key, template.name, output_path)
-            return TemplateApplicationResult(
-                template_name=entry_key,
-                status="success",
-                output_file=output_path,
-            )
-        except Exception as e:
-            logger.exception("テンプレート適用失敗: %s (%s)", entry_key, template.name)
-            return TemplateApplicationResult(
-                template_name=entry_key,
-                status="failed",
-                error_message=str(e),
-            )
+        # 3. 各ブロックごとの部分一致検索（ブロック単位でキーと値がペアになっている場合）
+        for block in ocr_result.blocks:
+            if source_key in block.text:
+                idx = block.text.find(source_key)
+                val = block.text[idx + len(source_key) :]
+                val = re.sub(r"^[\s:：\-\=・]+", "", val)
+                if val.strip():
+                    return val.strip()
 
-    def export_mapped_entry(
-        self,
-        mapped: dict[str, Any],
-        template: Template,
-        entry: TemplateSetEntry,
-        output_root: Path,
-    ) -> Path:
-        """整形済みデータをテンプレート定義に従いファイルへ書き出す。"""
-        output_dir = output_root / entry.output_subfolder
-        output_dir.mkdir(parents=True, exist_ok=True)
-        filename = self._format_filename(template.output_filename_pattern, mapped)
-        output_path = output_dir / filename
-        exporter = ExporterFactory.create(template.output_format)
-        exporter.export(data=mapped, template=template, output_path=output_path)
-        return output_path
+        return ""
 
-    def apply_single(
-        self,
-        ocr_engine: OCREngine,
-        image_path: Path,
-        template: Template,
-        license_key: str,
-    ) -> dict[str, Any]:
-        """単一テンプレート適用 (OCR + field_placements によるデータ整形)。"""
-        result = ocr_engine.process(
-            image_path=image_path,
-            extraction_prompt=build_extraction_prompt(template),
-            response_schema=template.response_schema,
-            license_key=license_key,
-        )
-        mapped = self._map_fields(result.extracted_data, template)
-        if result.field_confidences:
-            mapped["__field_confidences__"] = {
-                k: v.model_dump(mode="json") for k, v in result.field_confidences.items()
-            }
-        return mapped
+    def _convert_value(self, raw_value: str, field: FieldMapping) -> Any:
+        """抽出した文字列を指定されたデータ型に変換し、フォーマットを適用する。"""
+        val = raw_value.strip()
+        if not val:
+            return None
 
-    @staticmethod
-    def _map_fields(extracted_data: dict[str, Any], template: Template) -> dict[str, Any]:
-        """field_placements に従ってデータを整形する。"""
-        mapped: dict[str, Any] = {}
-        for fp in template.field_placements:
-            value = extracted_data.get(fp.source_key)
-            mapped[fp.target] = value
-        mapped["__raw__"] = extracted_data
-        return mapped
+        if field.data_type in ("number", "currency"):
+            # 末尾の飾りハイフンを除去
+            val = re.sub(r"-$", "", val)
+            # カンマ、円記号、通貨記号、スペースなどを除去
+            cleaned = re.sub(r"[^\d\.\-]", "", val)
+            if not cleaned:
+                return None
+            try:
+                if "." in cleaned:
+                    return float(cleaned)
+                return int(cleaned)
+            except ValueError:
+                return val
 
-    @staticmethod
-    def _format_filename(pattern: str, data: dict[str, Any]) -> str:
-        """ファイル名パターンにデータを埋め込む。"""
-        raw = data.get("__raw__", {})
-        try:
-            return pattern.format(**raw)
-        except KeyError:
-            safe_name = pattern
-            for key, val in raw.items():
-                safe_name = safe_name.replace(f"{{{key}}}", str(val) if val else "")
-            return safe_name
+        elif field.data_type == "date":
+            # 日付文字列の正規化とパース
+            cleaned = val.replace(" ", "")
+            # 代表的なパターン: YYYY/MM/DD, YYYY-MM-DD, YYYY年MM月DD日
+            date_patterns = [
+                r"(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})",
+                r"(\d{4})(\d{2})(\d{2})",  # YYYYMMDD
+            ]
+            for pat in date_patterns:
+                match = re.search(pat, cleaned)
+                if match:
+                    try:
+                        year = int(match.group(1))
+                        month = int(match.group(2))
+                        day = int(match.group(3))
+                        dt = datetime(year, month, day)
+
+                        if field.format_string:
+                            return dt.strftime(field.format_string)
+                        return dt.date()
+                    except ValueError:
+                        pass
+            return val
+
+        # デフォルトは文字列
+        return val

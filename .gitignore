@@ -1,22 +1,43 @@
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
 *.egg-info/
 dist/
-build/
-*.spec
+# PyInstaller / Build
+build/pyinstaller_mac/
+build/pyinstaller_win/
+*.egg
 
+# Virtual Environment
 .venv/
-.env
-.env.*
-!.env.example
 
-.mypy_cache/
-.pytest_cache/
-.ruff_cache/
-htmlcov/
-.coverage
+# uv
+uv.lock
 
-*.log
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
 .DS_Store
 Thumbs.db
+
+# Test / Coverage
+.pytest_cache/
+htmlcov/
+.coverage
+.coverage.*
+
+# Logs
+*.log
+
+# NDL OCR Lite models (large files - manage separately)
+# vendor/ndlocr_lite/src/model/*.onnx
+
+# Output
+output/

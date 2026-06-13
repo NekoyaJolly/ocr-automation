@@ -1,249 +1,384 @@
-"""テンプレートエディタ画面。"""
+"""テンプレートエディタパネル。
 
-import json
-import traceback
-from pathlib import Path
+テンプレートの新規作成・複製・削除・編集を行う。
+"""
 
-import yaml
-from PySide6.QtCore import Signal, Slot
+import logging
+from PySide6.QtCore import Qt, Slot
 from PySide6.QtWidgets import (
     QComboBox,
-    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
-    QListWidgetItem,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from app.core.template import load_template
-from app.gui.widgets.field_placement_editor import FieldPlacementEditor
-from app.infrastructure.logger import get_logger
-from app.infrastructure.paths import get_user_templates_dir
-from app.models.template_model import Template
+from app.controllers.app_controller import AppController
+from app.models.template_model import FieldMapping, Template
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
-class TemplateEditorWidget(QWidget):
-    """テンプレートの作成・編集・削除を行うエディタ画面。"""
+class TemplateEditorPanel(QWidget):
+    """テンプレートの管理およびフィールドマッピングを編集する UI パネル。"""
 
-    template_saved = Signal(str)
-
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, controller: AppController, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._controller = controller
         self._current_template: Template | None = None
         self._setup_ui()
-        self._refresh_list()
+        self.refresh_list()
 
     def _setup_ui(self) -> None:
-        layout = QHBoxLayout(self)
+        main_layout = QHBoxLayout(self)
 
-        splitter = QSplitter()
+        # 全体を左右に分割するスプリッター
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_layout.addWidget(splitter)
 
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
+        # --- 左ペイン: テンプレート一覧 ---
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+
         left_layout.addWidget(QLabel("テンプレート一覧"))
-        self._list = QListWidget()
-        self._list.currentItemChanged.connect(self._on_selection_changed)
-        left_layout.addWidget(self._list, stretch=1)
 
-        btn_row = QHBoxLayout()
-        new_btn = QPushButton("新規")
-        new_btn.clicked.connect(self._new_template)
-        btn_row.addWidget(new_btn)
-        dup_btn = QPushButton("複製")
-        dup_btn.clicked.connect(self._duplicate_template)
-        btn_row.addWidget(dup_btn)
-        del_btn = QPushButton("削除")
-        del_btn.clicked.connect(self._delete_template)
-        btn_row.addWidget(del_btn)
-        left_layout.addLayout(btn_row)
+        self._template_list = QListWidget()
+        self._template_list.itemSelectionChanged.connect(self._on_selection_changed)
+        left_layout.addWidget(self._template_list)
 
-        splitter.addWidget(left)
+        # 操作ボタン
+        btn_layout = QHBoxLayout()
+        self._new_btn = QPushButton("新規")
+        self._copy_btn = QPushButton("複製")
+        self._delete_btn = QPushButton("削除")
 
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
+        self._new_btn.clicked.connect(self._on_new)
+        self._copy_btn.clicked.connect(self._on_copy)
+        self._delete_btn.clicked.connect(self._on_delete)
 
+        btn_layout.addWidget(self._new_btn)
+        btn_layout.addWidget(self._copy_btn)
+        btn_layout.addWidget(self._delete_btn)
+        left_layout.addLayout(btn_layout)
+
+        splitter.addWidget(left_widget)
+
+        # --- 右ペイン: 編集フォーム ---
+        self._right_widget = QWidget()
+        right_layout = QVBoxLayout(self._right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+
+        # 1. 基本設定
         basic_group = QGroupBox("基本設定")
-        basic_form = QFormLayout(basic_group)
+        basic_layout = QVBoxLayout(basic_group)
+
+        # テンプレート名
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(QLabel("テンプレート名:"))
         self._name_edit = QLineEdit()
+        name_layout.addWidget(self._name_edit)
+        basic_layout.addLayout(name_layout)
+
+        # 説明
+        desc_layout = QHBoxLayout()
+        desc_layout.addWidget(QLabel("説明:"))
         self._desc_edit = QLineEdit()
+        desc_layout.addWidget(self._desc_edit)
+        basic_layout.addLayout(desc_layout)
+
+        # 出力形式 & ファイル名パターン
+        format_layout = QHBoxLayout()
+        format_layout.addWidget(QLabel("出力形式:"))
         self._format_combo = QComboBox()
         self._format_combo.addItems(["txt", "docx", "xlsx", "pdf"])
-        self._filename_edit = QLineEdit()
-        self._filename_edit.setPlaceholderText("{invoice_no}_{date}.xlsx")
-        self._base_file_edit = QLineEdit()
-        self._base_file_edit.setPlaceholderText("(空 = 新規作成)")
+        self._format_combo.currentTextChanged.connect(self._on_format_changed)
+        format_layout.addWidget(self._format_combo)
 
-        basic_form.addRow("名前:", self._name_edit)
-        basic_form.addRow("説明:", self._desc_edit)
-        basic_form.addRow("出力形式:", self._format_combo)
-        basic_form.addRow("ファイル名パターン:", self._filename_edit)
-        basic_form.addRow("ベーステンプレート:", self._base_file_edit)
+        format_layout.addWidget(QLabel("ファイル名パターン:"))
+        self._pattern_edit = QLineEdit()
+        format_layout.addWidget(self._pattern_edit, stretch=1)
+        basic_layout.addLayout(format_layout)
+
+        # ベースファイル
+        base_layout = QHBoxLayout()
+        base_layout.addWidget(QLabel("テンプレートファイル名(オプション):"))
+        self._base_edit = QLineEdit()
+        base_layout.addWidget(self._base_edit)
+        basic_layout.addLayout(base_layout)
+
         right_layout.addWidget(basic_group)
 
-        prompt_group = QGroupBox("抽出プロンプト")
-        prompt_layout = QVBoxLayout(prompt_group)
-        self._prompt_edit = QPlainTextEdit()
-        self._prompt_edit.setPlaceholderText("Gemini への指示文を入力...")
-        prompt_layout.addWidget(self._prompt_edit)
-        right_layout.addWidget(prompt_group)
+        # 2. フィールドマッピング
+        mapping_group = QGroupBox("フィールドマッピング設定")
+        mapping_layout = QVBoxLayout(mapping_group)
 
-        schema_group = QGroupBox("JSON Schema")
-        schema_layout = QVBoxLayout(schema_group)
-        self._schema_edit = QPlainTextEdit()
-        self._schema_edit.setPlaceholderText('{"type": "object", "properties": {...}}')
-        schema_layout.addWidget(self._schema_edit)
-        right_layout.addWidget(schema_group)
-
-        placement_group = QGroupBox("フィールド配置")
-        placement_layout = QVBoxLayout(placement_group)
-        self._placement_editor = FieldPlacementEditor()
-        placement_layout.addWidget(self._placement_editor)
-        right_layout.addWidget(placement_group)
-
-        save_btn = QPushButton("保存")
-        save_btn.clicked.connect(self._save_template)
-        right_layout.addWidget(save_btn)
-
-        splitter.addWidget(right)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 3)
-
-        layout.addWidget(splitter)
-
-    def _refresh_list(self) -> None:
-        self._list.clear()
-        tmpl_dir = get_user_templates_dir()
-        bundled_dir = Path(__file__).parent.parent.parent / "templates"
-
-        for d in [bundled_dir, tmpl_dir]:
-            if not d.exists():
-                continue
-            for f in sorted(d.glob("*.yaml")):
-                try:
-                    t = load_template(f)
-                    item = QListWidgetItem(t.name)
-                    item.setData(256, str(f))
-                    self._list.addItem(item)
-                except Exception:
-                    pass
-
-    @Slot()
-    def _on_selection_changed(self) -> None:
-        item = self._list.currentItem()
-        if item is None:
-            return
-        path = Path(item.data(256))
-        try:
-            tmpl = load_template(path)
-            self._load_to_form(tmpl)
-            self._current_template = tmpl
-        except Exception as e:
-            logger.exception("テンプレート YAML の読み込みに失敗しました: %s", path)
-            box = QMessageBox(self)
-            box.setWindowTitle("読み込みエラー")
-            box.setIcon(QMessageBox.Icon.Warning)
-            box.setText(str(e))
-            box.setInformativeText(
-                "「詳細を表示」から全文をコピーできます。"
-                " ログファイルにも記録されます。"
-            )
-            box.setDetailedText(traceback.format_exc())
-            box.exec()
-
-    def _load_to_form(self, t: Template) -> None:
-        self._name_edit.setText(t.name)
-        self._desc_edit.setText(t.description)
-        self._format_combo.setCurrentText(t.output_format)
-        self._filename_edit.setText(t.output_filename_pattern)
-        self._base_file_edit.setText(t.base_template_file or "")
-        self._prompt_edit.setPlainText(t.extraction_prompt)
-        self._schema_edit.setPlainText(
-            json.dumps(t.response_schema, ensure_ascii=False, indent=2)
+        self._mapping_table = QTableWidget()
+        self._mapping_table.setColumnCount(7)
+        self._mapping_table.setHorizontalHeaderLabels(
+            ["出力ラベル", "抽出キー / 正規表現", "抽出方法", "データ型", "書式指定", "Excelセル番地等", "BBox (x,y,w,h)"]
         )
-        self._placement_editor.load_placements(t.field_placements)
+        mapping_layout.addWidget(self._mapping_table)
 
-    def _form_to_template(self) -> Template:
-        schema_text = self._schema_edit.toPlainText()
-        try:
-            schema = json.loads(schema_text) if schema_text.strip() else {}
-        except json.JSONDecodeError:
-            schema = yaml.safe_load(schema_text) or {}
+        # テーブル操作ボタン
+        table_btn_layout = QHBoxLayout()
+        self._add_row_btn = QPushButton("行追加")
+        self._del_row_btn = QPushButton("行削除")
+        self._add_row_btn.clicked.connect(self._on_add_row)
+        self._del_row_btn.clicked.connect(self._on_del_row)
+        table_btn_layout.addWidget(self._add_row_btn)
+        table_btn_layout.addWidget(self._del_row_btn)
+        table_btn_layout.addStretch()
+        mapping_layout.addLayout(table_btn_layout)
 
-        return Template(
-            name=self._name_edit.text(),
-            description=self._desc_edit.text(),
-            output_format=self._format_combo.currentText(),
-            output_filename_pattern=self._filename_edit.text(),
-            base_template_file=self._base_file_edit.text() or None,
-            extraction_prompt=self._prompt_edit.toPlainText(),
-            response_schema=schema,
-            field_placements=self._placement_editor.get_placements(),
-        )
+        right_layout.addWidget(mapping_group)
 
-    @Slot()
-    def _save_template(self) -> None:
-        try:
-            tmpl = self._form_to_template()
-        except Exception as e:
-            QMessageBox.warning(self, "入力エラー", str(e))
-            return
+        # 保存ボタン
+        self._save_btn = QPushButton("保存")
+        self._save_btn.clicked.connect(self._on_save)
+        self._save_btn.setMinimumHeight(40)
+        right_layout.addWidget(self._save_btn)
 
-        if not tmpl.name:
-            QMessageBox.warning(self, "入力エラー", "名前を入力してください")
-            return
+        splitter.addWidget(self._right_widget)
 
-        out_dir = get_user_templates_dir()
-        safe_name = tmpl.name.replace("/", "_").replace("\\", "_")
-        path = out_dir / f"{safe_name}.yaml"
+        # スプリッターの比率設定 (左 30%, 右 70%)
+        splitter.setSizes([200, 500])
 
-        data = tmpl.model_dump(mode="json")
-        path.write_text(
-            yaml.dump(data, allow_unicode=True, default_flow_style=False),
-            encoding="utf-8",
-        )
-        self.template_saved.emit(tmpl.name)
-        self._refresh_list()
-        QMessageBox.information(self, "保存完了", f"テンプレートを保存しました: {path.name}")
+        # 初期状態は右側非表示
+        self._right_widget.setEnabled(False)
 
-    @Slot()
-    def _new_template(self) -> None:
-        self._name_edit.clear()
-        self._desc_edit.clear()
-        self._filename_edit.clear()
-        self._base_file_edit.clear()
-        self._prompt_edit.clear()
-        self._schema_edit.clear()
-        self._placement_editor.clear()
+    def refresh_list(self) -> None:
+        """テンプレート一覧を再読み込みしてリストを更新する。"""
+        self._template_list.clear()
+        templates = self._controller.get_available_templates()
+        for name in templates:
+            self._template_list.addItem(name)
+        self._right_widget.setEnabled(False)
         self._current_template = None
 
     @Slot()
-    def _duplicate_template(self) -> None:
-        if self._current_template is None:
+    def _on_selection_changed(self) -> None:
+        """リスト選択変更時に選択内容をフォームに読み込む。"""
+        selected_items = self._template_list.selectedItems()
+        if not selected_items:
+            self._right_widget.setEnabled(False)
             return
-        self._name_edit.setText(self._current_template.name + " (コピー)")
+
+        name = selected_items[0].text()
+        template = self._controller.load_template_by_name(name)
+        if template:
+            self._current_template = template
+            self._load_template_to_form(template)
+            self._right_widget.setEnabled(True)
+            # 保存済みテンプレートの名称変更は不可にする（ファイル名の変更を防ぐため。変更したい場合は複製して作成）
+            self._name_edit.setEnabled(False)
+
+    def _load_template_to_form(self, template: Template) -> None:
+        """テンプレートモデルをフォーム UI に反映する。"""
+        self._name_edit.setText(template.name)
+        self._desc_edit.setText(template.description)
+        self._format_combo.setCurrentText(template.output_format)
+        self._pattern_edit.setText(template.output_filename_pattern)
+        self._base_edit.setText(template.template_file or "")
+
+        self._mapping_table.setRowCount(0)
+        for field in template.fields:
+            self._add_row_with_data(field)
+
+    def _add_row_with_data(self, field: FieldMapping | None = None) -> None:
+        """マッピングテーブルに 1 行追加し、必要に応じて初期データを流し込む。"""
+        row = self._mapping_table.rowCount()
+        self._mapping_table.insertRow(row)
+
+        # 出力ラベル
+        label_item = QTableWidgetItem(field.output_label if field else "")
+        self._mapping_table.setItem(row, 0, label_item)
+
+        # 抽出キー
+        key_item = QTableWidgetItem(field.source_key if field else "")
+        self._mapping_table.setItem(row, 1, key_item)
+
+        # 抽出方法コンボボックス
+        ext_combo = QComboBox()
+        ext_combo.addItems(["keyword", "position"])
+        if field:
+            ext_combo.setCurrentText(field.extraction_type)
+        self._mapping_table.setCellWidget(row, 2, ext_combo)
+
+        # データ型コンボボックス
+        type_combo = QComboBox()
+        type_combo.addItems(["string", "number", "date", "currency"])
+        if field:
+            type_combo.setCurrentText(field.data_type)
+        self._mapping_table.setCellWidget(row, 3, type_combo)
+
+        # 書式指定
+        fmt_item = QTableWidgetItem(field.format_string if (field and field.format_string) else "")
+        self._mapping_table.setItem(row, 4, fmt_item)
+
+        # Excelセル番地等
+        pos_item = QTableWidgetItem(field.target_position if field else "")
+        self._mapping_table.setItem(row, 5, pos_item)
+
+        # BBox
+        bbox_str = ""
+        if field and field.bbox:
+            bbox_str = ",".join(map(str, field.bbox))
+        bbox_item = QTableWidgetItem(bbox_str)
+        self._mapping_table.setItem(row, 6, bbox_item)
 
     @Slot()
-    def _delete_template(self) -> None:
-        item = self._list.currentItem()
-        if item is None:
+    def _on_format_changed(self, text: str) -> None:
+        """フォーマット変更時にファイル名パターンの拡張子を自動調整する。"""
+        pattern = self._pattern_edit.text()
+        if not pattern:
+            self._pattern_edit.setText(f"{{date}}_{{source_basename}}_output.{text}")
+
+    @Slot()
+    def _on_add_row(self) -> None:
+        self._add_row_with_data(None)
+
+    @Slot()
+    def _on_del_row(self) -> None:
+        current_row = self._mapping_table.currentRow()
+        if current_row >= 0:
+            self._mapping_table.removeRow(current_row)
+
+    @Slot()
+    def _on_new(self) -> None:
+        """新規テンプレート編集画面を開く。"""
+        self._template_list.clearSelection()
+        self._current_template = None
+
+        self._name_edit.setText("新規テンプレート")
+        self._name_edit.setEnabled(True)
+        self._desc_edit.setText("")
+        self._format_combo.setCurrentText("txt")
+        self._pattern_edit.setText("{date}_{source_basename}_output.txt")
+        self._base_edit.setText("")
+
+        self._mapping_table.setRowCount(0)
+        self._right_widget.setEnabled(True)
+        self._name_edit.setFocus()
+
+    @Slot()
+    def _on_copy(self) -> None:
+        """選択されているテンプレートを複製する。"""
+        if not self._current_template:
             return
-        path = Path(item.data(256))
+        
+        # 複製用のコピーを作成
+        copied = self._current_template.model_copy(deep=True)
+        copied.name = f"{copied.name}_copy"
+
+        self._current_template = copied
+        self._load_template_to_form(copied)
+        self._name_edit.setEnabled(True)
+        self._name_edit.setFocus()
+        self._template_list.clearSelection()
+
+    @Slot()
+    def _on_delete(self) -> None:
+        """選択されているテンプレートを削除する。"""
+        selected_items = self._template_list.selectedItems()
+        if not selected_items:
+            return
+
+        name = selected_items[0].text()
         reply = QMessageBox.question(
-            self, "削除確認", f"{item.text()} を削除しますか?"
+            self,
+            "削除確認",
+            f"テンプレート '{name}' を削除しますか？\n(設定されている YAML ファイルが物理的に削除されます)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
+
         if reply == QMessageBox.StandardButton.Yes:
             try:
-                path.unlink()
-                self._refresh_list()
+                self._controller.delete_template(name)
+                self.refresh_list()
             except Exception as e:
-                QMessageBox.warning(self, "削除エラー", str(e))
+                QMessageBox.critical(self, "エラー", f"削除に失敗しました: {e}")
+
+    @Slot()
+    def _on_save(self) -> None:
+        """入力フォームの内容を Template モデルとしてバリデーションし保存する。"""
+        name = self._name_edit.text().strip()
+        if not name or name == "新規テンプレート":
+            QMessageBox.warning(self, "警告", "有効なテンプレート名を入力してください。")
+            return
+
+        fields = []
+        for row in range(self._mapping_table.rowCount()):
+            # テーブルセルの値を取得
+            label = self._get_item_text(row, 0)
+            key = self._get_item_text(row, 1)
+            ext_type = self._mapping_table.cellWidget(row, 2).currentText()
+            d_type = self._mapping_table.cellWidget(row, 3).currentText()
+            fmt = self._get_item_text(row, 4) or None
+            pos = self._get_item_text(row, 5)
+            bbox_str = self._get_item_text(row, 6)
+
+            if not label:
+                QMessageBox.warning(self, "警告", f"{row + 1}行目の出力ラベルが未入力です。")
+                return
+
+            bbox = None
+            if bbox_str:
+                try:
+                    parts = list(map(int, bbox_str.split(",")))
+                    if len(parts) != 4:
+                        raise ValueError
+                    bbox = (parts[0], parts[1], parts[2], parts[3])
+                except ValueError:
+                    QMessageBox.warning(
+                        self,
+                        "警告",
+                        f"{row + 1}行目の bbox 指定形式が不正です。x,y,w,h (整数4つ) で入力してください。",
+                    )
+                    return
+
+            fields.append(
+                FieldMapping(
+                    source_key=key,
+                    output_label=label,
+                    target_position=pos,
+                    data_type=d_type,
+                    format_string=fmt,
+                    extraction_type=ext_type,
+                    bbox=bbox,
+                )
+            )
+
+        # Template モデルの構築
+        template = Template(
+            name=name,
+            description=self._desc_edit.text().strip(),
+            output_format=self._format_combo.currentText(),
+            output_filename_pattern=self._pattern_edit.text().strip(),
+            template_file=self._base_edit.text().strip() or None,
+            fields=fields,
+        )
+
+        try:
+            self._controller.save_template(template)
+            QMessageBox.information(self, "成功", "テンプレートを保存しました。")
+            # リストを再表示し、新しく保存したアイテムを選択状態にする
+            self.refresh_list()
+            # リスト内を検索して再選択
+            items = self._template_list.findItems(name, Qt.MatchFlag.MatchExactly)
+            if items:
+                self._template_list.setCurrentItem(items[0])
+        except Exception as e:
+            QMessageBox.critical(self, "エラー", f"保存に失敗しました:\n{e}")
+
+    def _get_item_text(self, row: int, col: int) -> str:
+        item = self._mapping_table.item(row, col)
+        return item.text().strip() if item else ""

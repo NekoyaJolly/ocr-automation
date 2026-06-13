@@ -1,91 +1,46 @@
-"""テンプレート関連のデータモデル。"""
+"""テンプレートおよびテンプレートセットのデータモデル定義。"""
 
-from __future__ import annotations
+from typing import Literal
 
-from pathlib import Path
-from typing import Any, Literal
-
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 
-class FieldPlacement(BaseModel):
-    """抽出されたフィールドを出力フォーマットのどこに配置するか。"""
+class FieldMapping(BaseModel):
+    """OCR 結果からターゲットドキュメントへの 1 項目のマッピング定義。"""
 
-    source_key: str
-    target: str  # xlsx: "B2", docx: "{{invoice_no}}", pdf: form field name
-    display_name: str | None = None
-    format_string: str | None = None
-    expand: Literal["none", "rows", "cols"] = "none"
-    required_for_review: bool = False
+    source_key: str = Field(description="OCR 出力から値を特定するためのキー（項目名やキーワード）")
+    output_label: str = Field(description="出力フォーマット上でのラベル名")
+    target_position: str = Field(description="出力先での位置（Excel のセル番地 'B2' や Word のプレースホルダー '{{company_name}}' など）")
+    data_type: Literal["string", "number", "date", "currency"] = Field(default="string", description="データの種類。パースやフォーマットに影響する")
+    format_string: str | None = Field(default=None, description="出力フォーマット指定（例: 'YYYY/MM/DD', '¥#,##0'）")
+    extraction_type: Literal["position", "keyword"] = Field(default="keyword", description="値の抽出方法。位置ベースかキーワードベースか")
+    bbox: tuple[int, int, int, int] | None = Field(default=None, description="位置ベース抽出時の画像上での座標範囲 (x, y, width, height)")
 
 
 class Template(BaseModel):
-    """単一テンプレート定義。"""
+    """単一の出力ドキュメントの生成ルールを定義するテンプレートモデル。"""
 
-    name: str
-    description: str = ""
-    output_format: Literal["txt", "docx", "xlsx", "pdf"]
-    output_filename_pattern: str  # 例: "{invoice_no}_{date}.xlsx"
-    base_template_file: str | None = None
-
-    industry_preset: str | None = None
-    industry_context: str = ""
-    custom_extraction_instructions: str = ""
-    """ユーザー追加指示 (新形式 YAML)。extraction_prompt より優先。"""
-
-    extraction_prompt: str = ""
-    """後方互換・GUI 用。未使用時は空。custom と同期する。"""
-
-    response_schema: dict[str, Any]
-    field_placements: list[FieldPlacement] = Field(default_factory=list)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_legacy_extraction_prompt(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-        out = dict(data)
-        ep = out.get("extraction_prompt")
-        cu = out.get("custom_extraction_instructions") or ""
-        if ep and str(ep).strip() and not str(cu).strip():
-            out["custom_extraction_instructions"] = str(ep).strip()
-        return out
-
-    @model_validator(mode="after")
-    def _sync_prompt_strings(self) -> Template:
-        """GUI が参照する extraction_prompt と custom を双方向で埋める。"""
-        c = self.custom_extraction_instructions.strip()
-        e = self.extraction_prompt.strip()
-        if c and not e:
-            object.__setattr__(self, "extraction_prompt", c)
-        elif e and not c:
-            object.__setattr__(self, "custom_extraction_instructions", e)
-        return self
+    name: str = Field(description="テンプレートの一意な名称")
+    description: str = Field(default="", description="テンプレートの説明")
+    output_format: Literal["txt", "docx", "xlsx", "pdf"] = Field(description="出力ファイルの形式")
+    output_filename_pattern: str = Field(description="出力ファイル名の命名パターン（例: '{date}_{source_basename}_invoice.xlsx'）")
+    template_file: str | None = Field(default=None, description="ベースとなる Word/Excel のテンプレートファイル名。resources/templates/ から検索")
+    fields: list[FieldMapping] = Field(default_factory=list, description="マッピングするフィールド of リスト")
 
 
 class TemplateSetEntry(BaseModel):
-    """テンプレートセット内の 1 テンプレートエントリ。"""
+    """テンプレートセット内で有効化されるテンプレートの設定情報。"""
 
-    template_name: str
-    enabled: bool = True
-    output_subfolder: str
-    auto_print: bool = False
-    printer_name: str | None = None
+    template_name: str = Field(description="参照する Template の名前")
+    enabled: bool = Field(default=True, description="このテンプレートを適用するかどうか")
+    output_subfolder: str = Field(default="", description="出力ルートフォルダ配下の保存先サブフォルダ名")
+    auto_print: bool = Field(default=False, description="出力時に自動印刷を行うかどうか")
+    printer_name: str | None = Field(default=None, description="使用するプリンタ名。None の場合はデフォルトプリンタを使用")
 
 
 class TemplateSet(BaseModel):
-    """テンプレートセット定義。"""
+    """1つの OCR 結果に対して適用する、複数のテンプレートをまとめたセット定義。"""
 
-    name: str
-    description: str = ""
-    entries: list[TemplateSetEntry] = Field(default_factory=list)
-
-
-class TemplateApplicationResult(BaseModel):
-    """テンプレート適用の結果。"""
-
-    template_name: str
-    status: Literal["success", "failed"]
-    output_file: Path | None = None
-    error_message: str | None = None
-    retry_count: int = 0
+    name: str = Field(description="テンプレートセットの一意な名称")
+    description: str = Field(default="", description="セットの説明")
+    entries: list[TemplateSetEntry] = Field(default_factory=list, description="セットに含まれるテンプレートエントリのリスト")

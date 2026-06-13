@@ -1,28 +1,22 @@
-"""OCR 結果のデータモデル (v2: Gemini 構造化出力)。"""
+"""OCR 処理結果のデータモデル定義。"""
 
 from pathlib import Path
-from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 
-class FieldConfidence(BaseModel):
-    """フィールド単位の信頼度 (Gemini または後方互換デフォルト)。"""
+class OCRBlock(BaseModel):
+    """OCR で検出された 1 ブロック（行）の情報。"""
 
-    value: Any = None
-    confidence: Literal["certain", "inferred", "uncertain"] = "certain"
-    inference_reason: str | None = None
+    text: str
+    bbox: tuple[int, int, int, int] = Field(description="x, y, width, height")
+    confidence: float = Field(ge=0.0, le=1.0, default=0.0)
 
 
 class OCRResult(BaseModel):
-    """Gemini が返す構造化データを保持する。
-
-    extracted_data はプレーン値 (平坦化後) の dict。
-    field_confidences はトップレベル source_key ごとのメタデータ。
-    """
+    """1 枚の画像に対する OCR 処理結果。"""
 
     source_image: Path
-    extracted_data: dict[str, Any]
-    field_confidences: dict[str, FieldConfidence] = Field(default_factory=dict)
-    raw_response: dict[str, Any] | None = None
+    blocks: list[OCRBlock] = Field(default_factory=list)
+    raw_text: str = ""
     processing_time_ms: int = 0

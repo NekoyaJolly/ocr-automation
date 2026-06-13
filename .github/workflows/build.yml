@@ -1,46 +1,77 @@
-name: Build
+name: Build and Package App
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
   build:
+    name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        include:
-          - os: macos-latest
-            spec: build/pyinstaller_mac.spec
-            artifact: "OCR Automation.app"
-          - os: windows-latest
-            spec: build/pyinstaller_win.spec
-            artifact: "OCRAutomation"
+        os: [windows-latest, macos-latest]
 
     steps:
-      - uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
 
-      - name: Set up Python
-        run: uv python install 3.12
+    - name: Install uv
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+      shell: bash
 
-      - name: Install dependencies
-        run: |
-          uv sync
-          uv pip install pyinstaller
+    - name: Install dependencies
+      run: |
+        uv venv
+        uv pip install -e .[gui,output]
+        uv pip install pyinstaller
+      shell: bash
 
-      - name: Build with PyInstaller
-        env:
-          BACKEND_BASE_URL: ${{ secrets.BACKEND_BASE_URL }}
-        run: uv run pyinstaller ${{ matrix.spec }} --noconfirm
+    - name: Build macOS App
+      if: matrix.os == 'macos-latest'
+      run: |
+        source .venv/bin/activate
+        pyinstaller build/pyinstaller_mac.spec
+        
+        # dist ディレクトリに移動して zip 圧縮
+        cd dist
+        zip -r ocr-automation-mac.zip ocr-automation.app
+      shell: bash
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-${{ matrix.os }}
-          path: dist/
-          retention-days: 30
+    - name: Build Windows App
+      if: matrix.os == 'windows-latest'
+      run: |
+        .venv\Scripts\activate
+        pyinstaller build/pyinstaller_win.spec
+        
+        # dist ディレクトリに移動して zip 圧縮
+        cd dist
+        powershell Compress-Archive -Path ocr-automation -DestinationPath ocr-automation-win.zip
+      shell: cmd
+
+    - name: Upload macOS Artifact
+      if: matrix.os == 'macos-latest'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ocr-automation-mac
+        path: dist/ocr-automation-mac.zip
+        retention-days: 7
+
+    - name: Upload Windows Artifact
+      if: matrix.os == 'windows-latest'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ocr-automation-win
+        path: dist/ocr-automation-win.zip
+        retention-days: 7
