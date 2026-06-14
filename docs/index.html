@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OCR Automation - 手書き帳票の文字認識自動化ツール</title>
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --bg-color: #0b0d19;
+            --card-bg: rgba(255, 255, 255, 0.03);
+            --card-border: rgba(255, 255, 255, 0.08);
+            --primary-gradient: linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%);
+            --secondary-gradient: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+            --accent-glow: rgba(124, 58, 237, 0.15);
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+            --font-display: 'Outfit', 'Inter', sans-serif;
+            --font-sans: 'Inter', sans-serif;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            font-family: var(--font-sans);
+            line-height: 1.6;
+            overflow-x: hidden;
+            background-image: 
+                radial-gradient(circle at 10% 20%, rgba(124, 58, 237, 0.08) 0%, transparent 40%),
+                radial-gradient(circle at 90% 80%, rgba(79, 70, 229, 0.08) 0%, transparent 40%);
+            background-attachment: fixed;
+        }
+
+        header {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem 1.5rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            font-family: var(--font-display);
+            font-size: 1.5rem;
+            font-weight: 800;
+            background: linear-gradient(to right, #a78bfa, #818cf8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .logo svg {
+            width: 28px;
+            height: 28px;
+            fill: #a78bfa;
+        }
+
+        .github-link {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--text-main);
+            text-decoration: none;
+            font-size: 0.95rem;
+            font-weight: 500;
+            padding: 0.5rem 1rem;
+            border-radius: 50px;
+            border: 1px solid var(--card-border);
+            background: var(--card-bg);
+            transition: all 0.3s ease;
+        }
+
+        .github-link:hover {
+            background: rgba(255, 255, 255, 0.08);
+            border-color: rgba(255, 255, 255, 0.2);
+            transform: translateY(-2px);
+        }
+
+        .github-link svg {
+            width: 20px;
+            height: 20px;
+            fill: currentColor;
+        }
+
+        /* Hero Section */
+        .hero {
+            max-width: 1200px;
+            margin: 4rem auto;
+            padding: 0 1.5rem;
+            text-align: center;
+            position: relative;
+        }
+
+        .hero-badge {
+            display: inline-block;
+            padding: 0.4rem 1rem;
+            border-radius: 100px;
+            background: rgba(124, 58, 237, 0.1);
+            border: 1px solid rgba(124, 58, 237, 0.2);
+            color: #c084fc;
+            font-size: 0.85rem;
+            font-weight: 600;
+            margin-bottom: 1.5rem;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+
+        .hero h1 {
+            font-family: var(--font-display);
+            font-size: 3.5rem;
+            font-weight: 800;
+            line-height: 1.2;
+            margin-bottom: 1.5rem;
+            letter-spacing: -0.02em;
+            background: linear-gradient(135deg, #ffffff 0%, #d1d5db 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        @media (max-width: 768px) {
+            .hero h1 {
+                font-size: 2.5rem;
+            }
+        }
+
+        .hero p {
+            max-width: 650px;
+            margin: 0 auto 3rem auto;
+            color: var(--text-muted);
+            font-size: 1.2rem;
+            line-height: 1.7;
+        }
+
+        /* Download Buttons Group */
+        .download-group {
+            display: flex;
+            justify-content: center;
+            gap: 1.5rem;
+            flex-wrap: wrap;
+            margin-bottom: 4rem;
+        }
+
+        .download-btn {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            padding: 0.8rem 2rem;
+            border-radius: 12px;
+            text-decoration: none;
+            color: white;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            min-width: 240px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+        }
+
+        .download-btn.mac {
+            background: var(--primary-gradient);
+        }
+
+        .download-btn.win {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+        }
+
+        .download-btn:hover {
+            transform: translateY(-4px) scale(1.02);
+            box-shadow: 0 12px 30px rgba(124, 58, 237, 0.25);
+        }
+
+        .download-btn.win:hover {
+            background: rgba(255, 255, 255, 0.08);
+            border-color: rgba(255, 255, 255, 0.2);
+        }
+
+        .btn-top {
+            display: flex;
+            align-items: center;
+            gap: 0.8rem;
+            font-weight: 600;
+            font-size: 1.1rem;
+            margin-bottom: 0.2rem;
+        }
+
+        .btn-top svg {
+            width: 20px;
+            height: 20px;
+            fill: currentColor;
+        }
+
+        .btn-sub {
+            font-size: 0.75rem;
+            opacity: 0.8;
+            padding-left: 28px;
+        }
+
+        /* Highlight target OS */
+        .download-btn.highlight {
+            animation: pulse-glow 2s infinite;
+            border: 1px solid rgba(167, 139, 250, 0.4);
+        }
+
+        @keyframes pulse-glow {
+            0% {
+                box-shadow: 0 0 0 0 rgba(124, 58, 237, 0.4);
+            }
+            70% {
+                box-shadow: 0 0 0 15px rgba(124, 58, 237, 0);
+            }
+            100% {
+                box-shadow: 0 0 0 0 rgba(124, 58, 237, 0);
+            }
+        }
+
+        /* Features Section */
+        .section-title {
+            text-align: center;
+            font-family: var(--font-display);
+            font-size: 2.2rem;
+            font-weight: 700;
+            margin-bottom: 3rem;
+            background: linear-gradient(135deg, #ffffff, #9ca3af);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .features {
+            max-width: 1100px;
+            margin: 6rem auto;
+            padding: 0 1.5rem;
+        }
+
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 2rem;
+        }
+
+        .feature-card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 16px;
+            padding: 2.5rem 2rem;
+            transition: all 0.3s ease;
+            backdrop-filter: blur(10px);
+        }
+
+        .feature-card:hover {
+            transform: translateY(-5px);
+            border-color: rgba(167, 139, 250, 0.3);
+            background: rgba(255, 255, 255, 0.05);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        }
+
+        .feature-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 12px;
+            background: rgba(124, 58, 237, 0.1);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 1.5rem;
+            color: #a78bfa;
+            border: 1px solid rgba(124, 58, 237, 0.2);
+        }
+
+        .feature-icon svg {
+            width: 24px;
+            height: 24px;
+            fill: currentColor;
+        }
+
+        .feature-card h3 {
+            font-family: var(--font-display);
+            font-size: 1.35rem;
+            font-weight: 600;
+            margin-bottom: 0.8rem;
+        }
+
+        .feature-card p {
+            color: var(--text-muted);
+            font-size: 0.95rem;
+            line-height: 1.6;
+        }
+
+        /* Guide Section */
+        .guide {
+            max-width: 800px;
+            margin: 6rem auto;
+            padding: 0 1.5rem;
+        }
+
+        .guide-steps {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 16px;
+            padding: 3rem 2.5rem;
+            backdrop-filter: blur(10px);
+        }
+
+        .step {
+            display: flex;
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .step:last-child {
+            margin-bottom: 0;
+        }
+
+        .step-num {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            background: #7c3aed;
+            color: white;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .step-content h4 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 0.4rem;
+        }
+
+        .step-content p {
+            color: var(--text-muted);
+            font-size: 0.95rem;
+        }
+
+        footer {
+            max-width: 1200px;
+            margin: 8rem auto 0 auto;
+            padding: 3rem 1.5rem;
+            border-top: 1px solid var(--card-border);
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
+        /* OS Detection Alert */
+        .os-badge {
+            margin-top: 1rem;
+            font-size: 0.85rem;
+            color: #a78bfa;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="logo">
+            <svg viewBox="0 0 24 24">
+                <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 10H7v-2h10v2zm0-4H7V7h10v2zm0 8H7v-2h10v2z"/>
+            </svg>
+            OCR Automation
+        </div>
+        <a href="https://github.com/NekoyaJolly/ocr-automation" class="github-link" target="_blank">
+            <svg viewBox="0 0 24 24">
+                <path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.008-.866-.013-1.7-2.782.603-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.646.64.699 1.026 1.592 1.026 2.683 0 3.842-2.337 4.687-4.565 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.577.688.479C19.138 20.164 22 16.418 22 12c0-5.523-4.477-10-10-10z"/>
+            </svg>
+            GitHub
+        </a>
+    </header>
+
+    <section class="hero">
+        <span class="hero-badge">Ver 1.0.0 リリース</span>
+        <h1>手書き帳票スキャン & OCR<br>仕分け自動化ツール</h1>
+        <p>
+            スキャナーフォルダを常時監視し、手書き画像を読み込み、高性能なローカルOCRでテキスト化。自動的にリネームやフォルダ仕分け、印刷までの一連の業務を完全自動化します。
+        </p>
+
+        <div class="download-group">
+            <!-- macOS 用ダウンロード -->
+            <a href="https://github.com/NekoyaJolly/ocr-automation/releases/latest/download/ocr-automation-mac.zip" class="download-btn mac" id="btn-mac">
+                <div class="btn-top">
+                    <svg viewBox="0 0 24 24">
+                        <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 4.17c.66-.81 1.11-1.93.99-3.06-1 .04-2.22.67-2.94 1.52-.64.74-1.2 1.88-1.05 2.99 1.11.09 2.26-.58 3-1.45z"/>
+                    </svg>
+                    Mac用をダウンロード
+                </div>
+                <div class="btn-sub">macOS .zip (Intel / Apple Silicon)</div>
+            </a>
+
+            <!-- Windows 用ダウンロード -->
+            <a href="https://github.com/NekoyaJolly/ocr-automation/releases/latest/download/ocr-automation-win.zip" class="download-btn win" id="btn-win">
+                <div class="btn-top">
+                    <svg viewBox="0 0 24 24">
+                        <path d="M3 5.54l7.25-1V11.5H3V5.54zM3 12.5h7.25v6.96l-7.25-1V12.5zm8.25-8.11L21 3v8.5h-9.75V4.39zm0 15.22V12.5H21v6.11l-9.75-1.44z"/>
+                    </svg>
+                    Windows用をダウンロード
+                </div>
+                <div class="btn-sub">Windows 10/11 .zip</div>
+            </a>
+        </div>
+
+        <div class="os-badge" id="os-alert" style="display: none;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="16" x2="12" y2="12"></line>
+                <line x1="12" y1="8" x2="12.01" y2="8"></line>
+            </svg>
+            <span id="os-text">お使いのOS用のダウンロードボタンを強調表示しています</span>
+        </div>
+    </section>
+
+    <!-- Features Section -->
+    <section class="features">
+        <h2 class="section-title">主な機能</h2>
+        <div class="feature-grid">
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <svg viewBox="0 0 24 24">
+                        <path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm8.94 3c-.46-4.17-3.77-7.48-7.94-7.94V1h-2v2.06C6.83 3.52 3.52 6.83 3.06 11H1v2h2.06c.46 4.17 3.77 7.48 7.94 7.94V23h-2v-2.06c-4.17-.46-7.48-3.77-7.94-7.94H1v-2h2.06z"/>
+                    </svg>
+                </div>
+                <h3>フォルダ自動監視</h3>
+                <p>スキャナーや複合機からの保存先フォルダをリアルタイムに監視し、手書き文書が保存されると検知してバックグラウンドで即座に処理を開始します。</p>
+            </div>
+
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <svg viewBox="0 0 24 24">
+                        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/>
+                    </svg>
+                </div>
+                <h3>ローカル動作の高性能OCR</h3>
+                <p>NDL OCR Lite モデルをパソコン上で直接ロードするため、外部クラウドに個人情報や機密資料をアップロードすることなく、安全かつ高速に日本語手書き文字を読み取ります。</p>
+            </div>
+
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <svg viewBox="0 0 24 24">
+                        <path d="M19 8H5c-1.66 0-3 1.34-3 3v6h4v4h12v-4h4v-6c0-1.66-1.34-3-3-3zm-3 11H8v-5h8v5zm3-7c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm-1-9H6v4h12V3z"/>
+                    </svg>
+                </div>
+                <h3>印刷・仕分けも自動化</h3>
+                <p>読み取った結果に基づいてエクスポートファイルを作成。さらに対象テンプレートの設定に応じて、自動的にプリンターへ印刷ジョブを送信します。</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Guide Section -->
+    <section class="guide">
+        <h2 class="section-title">使い方ガイド</h2>
+        <div class="guide-steps">
+            <div class="step">
+                <div class="step-num">1</div>
+                <div class="step-content">
+                    <h4>ダウンロードと解凍</h4>
+                    <p>上記のボタンからお使いのOS向けのZIPファイルをダウンロードし、任意の場所に解凍してください。</p>
+                </div>
+            </div>
+            <div class="step">
+                <div class="step-num">2</div>
+                <div class="step-content">
+                    <h4>アプリケーションの起動</h4>
+                    <p>解凍したフォルダ内の実行ファイル（`ocr-automation` または `ocr-automation.app`）をダブルクリックして起動します。</p>
+                </div>
+            </div>
+            <div class="step">
+                <div class="step-num">3</div>
+                <div class="step-content">
+                    <h4>自動セットアップと設定</h4>
+                    <p>初回起動時に必要なAI推論モデルが自動的にセットアップされます。その後、監視フォルダとテンプレートを設定すれば準備完了です。</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <footer>
+        <p>&copy; 2026 NekoyaJolly. All rights reserved.</p>
+    </footer>
+
+    <!-- OS Detection Script -->
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var userAgent = window.navigator.userAgent.toLowerCase();
+            var macBtn = document.getElementById("btn-mac");
+            var winBtn = document.getElementById("btn-win");
+            var osAlert = document.getElementById("os-alert");
+            var osText = document.getElementById("os-text");
+
+            if (userAgent.indexOf("mac") !== -1) {
+                macBtn.classList.add("highlight");
+                osAlert.style.display = "inline-flex";
+                osText.textContent = "検出されたOS：macOS用をハイライトしています";
+            } else if (userAgent.indexOf("win") !== -1) {
+                winBtn.classList.add("highlight");
+                osAlert.style.display = "inline-flex";
+                osText.textContent = "検出されたOS：Windows用をハイライトしています";
+            }
+        });
+    </script>
+</body>
+</html>
